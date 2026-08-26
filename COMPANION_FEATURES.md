@@ -110,6 +110,18 @@ you own or have explicit permission to use.
 - Synthesized phrases are cached locally by text and voice identity. Cache files
   are excluded from backups and can be cleared from the console.
 
+### Live2D lip-sync bridge
+
+- A local compatibility bridge follows the playback ordering used by
+  [easy-live2d](https://github.com/Panzer-Jack/easy-live2d): decode the PCM used
+  for lip sync first, then start browser audio and the Live2D clock together.
+- It intercepts only generated `data:audio/wav` speech and leaves other browser
+  media unchanged. If PCM preparation fails, normal playback continues.
+- RMS gain, silence threshold, mouth-opening attack and closing release are
+  configurable from **Companion Console → Voice cloning**.
+- The upstream frontend submodule remains untouched; the bridge is injected by
+  the local server and can be removed independently.
+
 ### Diagnostics and memory budget
 
 The diagnostics center records only local duration, success, cache-hit and peak

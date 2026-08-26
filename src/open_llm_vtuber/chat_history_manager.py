@@ -257,8 +257,13 @@ def get_history_list(conf_uid: str) -> List[dict]:
     empty_history_uids = []
 
     try:
+        companion_state_files = {
+            "memory_records.json",
+            "commitments.json",
+            "relationship_state.json",
+        }
         for filename in os.listdir(conf_dir):
-            if not filename.endswith(".json"):
+            if not filename.endswith(".json") or filename in companion_state_files:
                 continue
 
             history_uid = filename[:-5]

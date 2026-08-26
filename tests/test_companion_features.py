@@ -27,6 +27,8 @@ from src.open_llm_vtuber import (
 from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
 from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
 from src.open_llm_vtuber.agent.output_types import Actions, DisplayText
+from src.open_llm_vtuber.server import inject_companion_lipsync
+from src.open_llm_vtuber.chat_history_manager import get_history_list
 
 
 class CompanionFeatureTests(unittest.TestCase):
@@ -49,6 +51,31 @@ class CompanionFeatureTests(unittest.TestCase):
             self.assertTrue(memory_core.clear_core_memory("alice"))
             self.assertEqual(memory_core.load_core_memory("alice"), "")
 
+    def test_lipsync_bridge_is_injected_once(self):
+        html = '<html><head><script type="module" src="main.js"></script></head></html>'
+        injected = inject_companion_lipsync(html)
+        self.assertIn("/companion-assets/lip_sync_bridge.js", injected)
+        self.assertEqual(
+            inject_companion_lipsync(injected).count("lip_sync_bridge.js"), 1
+        )
+
+    def test_lipsync_settings_are_bounded(self):
+        data_dir = self.root / "companion_data"
+        with (
+            patch.object(companion_routes, "DATA_DIR", data_dir),
+            patch.object(companion_routes, "STATE_PATH", data_dir / "state.json"),
+        ):
+            state = companion_routes._default_state()
+            state["lipsync"].update(
+                {"gain": 99, "silence_threshold": -1, "attack": 0, "release": 8}
+            )
+            companion_routes._save_state(state)
+            settings = companion_routes.get_lipsync_settings()
+            self.assertEqual(settings["gain"], 3.0)
+            self.assertEqual(settings["silence_threshold"], 0.0)
+            self.assertEqual(settings["attack"], 0.05)
+            self.assertEqual(settings["release"], 1.0)
+
     def test_fts_indexes_and_finds_cjk_history(self):
         history = self.root / "chat_history" / "test_role"
         history.mkdir(parents=True)
@@ -67,6 +94,38 @@ class CompanionFeatureTests(unittest.TestCase):
         self.assertTrue(any("爬山" in item for item in results))
         detailed = memory_fts.search_detailed("test_role", "周末喜欢", 3)
         self.assertEqual(detailed[0]["history_uid"], "turn")
+
+    def test_companion_state_files_are_not_chat_transcripts(self):
+        history_root = self.root / "history"
+        role_dir = history_root / "role"
+        role_dir.mkdir(parents=True)
+        (role_dir / "turn.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "role": "human",
+                        "content": "你好",
+                        "timestamp": "2026-01-01T00:00:00+08:00",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (role_dir / "relationship_state.json").write_text("{}", encoding="utf-8")
+        (role_dir / "commitments.json").write_text("[]", encoding="utf-8")
+        (role_dir / "memory_records.json").write_text("[]", encoding="utf-8")
+        with patch(
+            "src.open_llm_vtuber.chat_history_manager._ensure_conf_dir",
+            return_value=str(role_dir),
+        ):
+            self.assertEqual(
+                [item["uid"] for item in get_history_list("role")], ["turn"]
+            )
+        with patch.object(memory_fts, "_conf_dir", return_value=str(role_dir)):
+            self.assertEqual(
+                [Path(path).name for path in memory_fts._list_transcripts("role")],
+                ["turn.json"],
+            )
 
     def test_proactive_settings_are_bounded_and_write_prompt(self):
         data_dir = self.root / "companion_data"

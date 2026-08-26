@@ -8,10 +8,11 @@ It uses FastAPI for the server and Starlette for static file serving.
 
 import os
 import shutil
+from pathlib import Path
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import Response
+from starlette.responses import HTMLResponse, Response
 from starlette.staticfiles import StaticFiles as StarletteStaticFiles
 
 from .routes import init_client_ws_route, init_webtool_routes, init_proxy_route
@@ -21,6 +22,15 @@ from .backup_manager import start_daily_backup, stop_daily_backup
 from .data_migrations import run_migrations
 from .service_context import ServiceContext
 from .config_manager.utils import Config
+
+LIP_SYNC_BRIDGE_TAG = '<script src="/companion-assets/lip_sync_bridge.js"></script>'
+
+
+def inject_companion_lipsync(html: str) -> str:
+    """Inject the local lip-sync compatibility bridge before frontend modules run."""
+    if LIP_SYNC_BRIDGE_TAG in html:
+        return html
+    return html.replace("</head>", f"  {LIP_SYNC_BRIDGE_TAG}\n  </head>")
 
 
 # Create a custom StaticFiles class that adds CORS headers
@@ -102,6 +112,12 @@ class WebSocketServer:
         )
         self.app.include_router(init_companion_routes())
 
+        @self.app.get("/", response_class=HTMLResponse)
+        @self.app.get("/index.html", response_class=HTMLResponse)
+        async def _frontend_index_with_companion_lipsync():
+            html = Path("frontend/index.html").read_text(encoding="utf-8")
+            return HTMLResponse(inject_companion_lipsync(html))
+
         @self.app.on_event("startup")
         async def _start_companion_runtime():
             run_migrations()
@@ -161,6 +177,12 @@ class WebSocketServer:
             "/companion",
             CORSStaticFiles(directory="companion_ui", html=True),
             name="companion_ui",
+        )
+
+        self.app.mount(
+            "/companion-assets",
+            CORSStaticFiles(directory="companion_assets"),
+            name="companion_assets",
         )
 
         # Mount main frontend last (as catch-all)

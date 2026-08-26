@@ -64,6 +64,13 @@ DEFAULT_PROACTIVE = {
         "blocked_apps": environment_awareness.DEFAULT_BLOCKED_APPS,
     },
 }
+DEFAULT_LIPSYNC = {
+    "enabled": True,
+    "gain": 1.35,
+    "silence_threshold": 0.018,
+    "attack": 0.68,
+    "release": 0.34,
+}
 
 _yaml = YAML()
 _yaml.preserve_quotes = True
@@ -75,6 +82,7 @@ def _default_state() -> dict[str, Any]:
         "proactive": dict(DEFAULT_PROACTIVE),
         "voices": {},
         "active_voice": {},
+        "lipsync": dict(DEFAULT_LIPSYNC),
     }
 
 
@@ -228,6 +236,20 @@ def get_proactive_settings() -> dict[str, Any]:
     return settings
 
 
+def get_lipsync_settings() -> dict[str, Any]:
+    state = _load_state()
+    settings = dict(DEFAULT_LIPSYNC)
+    settings.update(state.get("lipsync", {}))
+    settings["enabled"] = bool(settings.get("enabled", True))
+    settings["gain"] = max(0.5, min(3.0, float(settings.get("gain", 1.35))))
+    settings["silence_threshold"] = max(
+        0.0, min(0.2, float(settings.get("silence_threshold", 0.018)))
+    )
+    settings["attack"] = max(0.05, min(1.0, float(settings.get("attack", 0.68))))
+    settings["release"] = max(0.05, min(1.0, float(settings.get("release", 0.34))))
+    return settings
+
+
 def write_proactive_prompt(
     settings: dict[str, Any] | None = None, selected_topic: str | None = None
 ) -> str:
@@ -306,7 +328,9 @@ def init_companion_routes() -> APIRouter:
             **companion_diagnostics.summary(),
             "voice_cache": {
                 "files": len(cache_files),
-                "bytes": sum(path.stat().st_size for path in cache_files if path.is_file()),
+                "bytes": sum(
+                    path.stat().st_size for path in cache_files if path.is_file()
+                ),
             },
         }
 
@@ -341,9 +365,7 @@ def init_companion_routes() -> APIRouter:
         }
 
     @router.put("/api/companion/continuity/{conf_uid}/commitments/{item_id}")
-    async def update_commitment(
-        conf_uid: str, item_id: str, request: Request
-    ):
+    async def update_commitment(conf_uid: str, item_id: str, request: Request):
         if forbidden := _local_only(request):
             return forbidden
         body = await request.json()
@@ -380,6 +402,26 @@ def init_companion_routes() -> APIRouter:
             "runtime": await runtime_manager.status(),
         }
 
+    @router.get("/api/companion/lipsync")
+    async def get_lipsync(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {"ok": True, **get_lipsync_settings()}
+
+    @router.put("/api/companion/lipsync")
+    async def put_lipsync(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        state = _load_state()
+        settings = get_lipsync_settings()
+        for key in DEFAULT_LIPSYNC:
+            if key in body:
+                settings[key] = body[key]
+        state["lipsync"] = settings
+        _save_state(state)
+        return {"ok": True, **get_lipsync_settings()}
+
     @router.get("/api/companion/backups")
     async def backups(request: Request):
         if forbidden := _local_only(request):
@@ -395,7 +437,9 @@ def init_companion_routes() -> APIRouter:
         if forbidden := _local_only(request):
             return forbidden
         if Path(filename).name != filename or not filename.endswith(".aicbackup"):
-            return JSONResponse({"ok": False, "error": "invalid filename"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "error": "invalid filename"}, status_code=400
+            )
         try:
             return {"ok": True, **backup_manager.preview_backup(filename)}
         except Exception as exc:
@@ -415,7 +459,10 @@ def init_companion_routes() -> APIRouter:
     async def update_backup_retention(request: Request):
         if forbidden := _local_only(request):
             return forbidden
-        return {"ok": True, "retention": backup_manager.save_retention(await request.json())}
+        return {
+            "ok": True,
+            "retention": backup_manager.save_retention(await request.json()),
+        }
 
     @router.post("/api/companion/backups/prune")
     async def prune_backups(request: Request):

@@ -147,8 +147,13 @@ def _list_transcripts(conf_uid: str) -> List[str]:
     d = _conf_dir(conf_uid)
     out: List[str] = []
     try:
+        companion_state_files = {
+            "memory_records.json",
+            "commitments.json",
+            "relationship_state.json",
+        }
         for name in os.listdir(d):
-            if name.endswith(".json"):
+            if name.endswith(".json") and name not in companion_state_files:
                 out.append(os.path.join(d, name))
     except FileNotFoundError:
         pass
