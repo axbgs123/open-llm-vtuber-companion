@@ -33,6 +33,9 @@ from . import backup_manager
 from . import data_migrations
 from . import upstream_manager
 from . import environment_awareness
+from . import companion_diagnostics
+from . import commitment_manager
+from . import relationship_state
 
 ROOT = Path.cwd().resolve()
 CHARACTERS_DIR = ROOT / "characters"
@@ -283,13 +286,87 @@ def _activate_voice(conf_uid: str, profile: dict[str, Any]) -> None:
         "text_split_method": "cut5",
         "batch_size": "1",
         "media_type": "wav",
-        "streaming_mode": "false",
+        # GPT-SoVITS begins returning the first sentence as soon as it is ready.
+        "streaming_mode": "true",
     }
     _write_roundtrip(path, data)
 
 
 def init_companion_routes() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/api/companion/diagnostics")
+    async def diagnostics(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        cache_dir = DATA_DIR / "voice_cache"
+        cache_files = list(cache_dir.glob("*")) if cache_dir.is_dir() else []
+        return {
+            "ok": True,
+            **companion_diagnostics.summary(),
+            "voice_cache": {
+                "files": len(cache_files),
+                "bytes": sum(path.stat().st_size for path in cache_files if path.is_file()),
+            },
+        }
+
+    @router.delete("/api/companion/diagnostics")
+    async def clear_diagnostics(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        companion_diagnostics.clear()
+        return {"ok": True}
+
+    @router.delete("/api/companion/voice-cache")
+    async def clear_voice_cache(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        cache_dir = DATA_DIR / "voice_cache"
+        removed = 0
+        if cache_dir.is_dir():
+            for path in cache_dir.iterdir():
+                if path.is_file():
+                    path.unlink()
+                    removed += 1
+        return {"ok": True, "removed": removed}
+
+    @router.get("/api/companion/continuity/{conf_uid}")
+    async def get_continuity(conf_uid: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {
+            "ok": True,
+            "commitments": commitment_manager.list_items(conf_uid),
+            "relationship": relationship_state.load(conf_uid),
+        }
+
+    @router.put("/api/companion/continuity/{conf_uid}/commitments/{item_id}")
+    async def update_commitment(
+        conf_uid: str, item_id: str, request: Request
+    ):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        try:
+            rows = commitment_manager.update(
+                conf_uid, item_id, str(body.get("status", "done"))
+            )
+            return {"ok": True, "commitments": rows}
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    @router.post("/api/companion/continuity/{conf_uid}/commitments")
+    async def create_commitment(conf_uid: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        try:
+            row = commitment_manager.create(
+                conf_uid, str(body.get("content", "")), str(body.get("due_at", ""))
+            )
+            return {"ok": True, "commitment": row}
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     @router.get("/api/companion/status")
     async def status(request: Request):

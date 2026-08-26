@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import math
 import os
+import re
 import sqlite3
 from array import array
 from pathlib import Path
@@ -224,6 +225,7 @@ async def search(conf_uid: str, query: str, k: int = 5) -> list[dict[str, Any]]:
 
 
 async def hybrid_search(conf_uid: str, query: str, k: int = 5) -> list[dict[str, Any]]:
+    started = __import__("time").perf_counter()
     keyword = memory_fts.search_detailed(conf_uid, query, max(k * 2, 8))
     try:
         semantic = await search(conf_uid, query, max(k * 2, 8))
@@ -250,7 +252,32 @@ async def hybrid_search(conf_uid: str, query: str, k: int = 5) -> list[dict[str,
                 "hybrid_score": 0.6 * semantic_score,
                 "methods": ["semantic"],
             }
+    # A small deterministic reranker: direct lexical evidence and relative-time
+    # intent should beat a vaguely similar old message.
+    query_terms = {
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9_]{2,}|[\u3400-\u9fff]{2,}", query)
+    }
+    wants_recent = any(word in query for word in ("最近", "刚才", "今天", "上次", "近来"))
+    now = dt.datetime.now().astimezone()
+    for item in merged.values():
+        text = str(item.get("text", "")).lower()
+        overlap = sum(term in text for term in query_terms)
+        item["hybrid_score"] += min(0.12, overlap * 0.03)
+        if wants_recent:
+            try:
+                timestamp = dt.datetime.fromisoformat(str(item.get("timestamp", "")))
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.astimezone()
+                age_days = max(0.0, (now - timestamp).total_seconds() / 86400)
+                item["hybrid_score"] += 0.12 / (1.0 + age_days / 7.0)
+                item.setdefault("methods", []).append("recency")
+            except Exception:
+                pass
     results = sorted(
         merged.values(), key=lambda item: item["hybrid_score"], reverse=True
     )
+    from .companion_diagnostics import record
+
+    record("memory_hybrid_search", (__import__("time").perf_counter() - started) * 1000)
     return results[: max(1, min(20, int(k)))]

@@ -13,11 +13,15 @@ from src.open_llm_vtuber import (
     memory_records,
     memory_semantic,
     proactive_manager,
+    commitment_manager,
+    relationship_state,
+    companion_diagnostics,
     runtime_manager,
     backup_manager,
     data_migrations,
     environment_awareness,
 )
+from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
 
 
 class CompanionFeatureTests(unittest.TestCase):
@@ -243,6 +247,59 @@ class CompanionFeatureTests(unittest.TestCase):
         self.assertFalse(result["allowed"])
         self.assertIn("meeting_app", result["reasons"])
         self.assertIn("user_away", result["reasons"])
+
+    def test_commitments_extract_and_complete(self):
+        with patch.object(
+            commitment_manager,
+            "_path",
+            return_value=self.root / "history" / "role" / "commitments.json",
+        ):
+            created = commitment_manager.extract_from_turn(
+                "role", "提醒我明天9点提交项目周报"
+            )
+            self.assertEqual(len(created), 1)
+            self.assertIn("提交项目周报", created[0]["content"])
+            self.assertIn("提交项目周报", commitment_manager.due_topic("role", 48))
+            self.assertEqual(commitment_manager.due_topic("role", 48), "")
+            rows = commitment_manager.update("role", created[0]["id"], "done")
+            self.assertEqual(rows[0]["status"], "done")
+
+    def test_relationship_continuity_tracks_recent_mood(self):
+        with patch.object(
+            relationship_state,
+            "_path",
+            return_value=self.root / "history" / "role" / "relationship_state.json",
+        ):
+            state = relationship_state.update_from_turn(
+                "role", "今天压力很大，有点累", "先休息一下"
+            )
+            self.assertEqual(state["recent_moods"][-1]["mood"], "低落")
+            self.assertIn("偏低落", relationship_state.prompt_context("role"))
+
+    def test_diagnostics_aggregates_cache_hits(self):
+        with patch.object(companion_diagnostics, "PATH", self.root / "diag.json"):
+            companion_diagnostics.record("voice_synthesis", 20, cached=True)
+            companion_diagnostics.record("voice_synthesis", 40)
+            metric = companion_diagnostics.summary()["metrics"][0]
+            self.assertEqual(metric["average_ms"], 30)
+            self.assertEqual(metric["cache_hits"], 1)
+
+    def test_voice_cache_works_without_starting_backend(self):
+        engine = GPTSoVITSEngine(ref_audio_path="voice.wav", prompt_text="参考")
+        cached = self.root / "cached.wav"
+        output = self.root / "output.wav"
+        cached.write_bytes(b"RIFF" + b"0" * 256)
+        with (
+            patch.object(engine, "_cache_path", return_value=cached),
+            patch.object(engine, "generate_cache_file_name", return_value=str(output)),
+            patch(
+                "src.open_llm_vtuber.runtime_manager.ensure_gpt_sovits_blocking"
+            ) as ensure,
+            patch.object(companion_diagnostics, "PATH", self.root / "voice-diag.json"),
+        ):
+            self.assertEqual(engine.generate_audio("你好"), str(output))
+            ensure.assert_not_called()
+            self.assertEqual(output.read_bytes(), cached.read_bytes())
 
 
 if __name__ == "__main__":

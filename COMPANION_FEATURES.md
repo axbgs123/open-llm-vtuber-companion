@@ -46,6 +46,18 @@ configuration system. Removing a character archives its YAML under
 - The semantic model is downloaded only when enabled in the console.
 - Keyword and semantic rankings are merged; new completed turns are appended
   incrementally after the first semantic index build.
+- A deterministic reranker boosts direct lexical evidence and, for queries such
+  as "recently" or "last time", favors appropriately recent conversations.
+
+### Relationship continuity and commitments
+
+- Each character keeps a small relationship journal containing conversation
+  count, engagement trend, and recent expression tone. It is context, not a
+  psychological diagnosis, and raw scores are never spoken to the user.
+- Phrases such as "remind me" and near-term plans are converted into per-role
+  commitments. They can also be created, completed, or dismissed in the console.
+- Commitments due within 24 hours take priority in proactive conversation, while
+  preserving the character's natural voice instead of announcing a system alert.
 
 ### Proactive conversation policy
 
@@ -56,6 +68,8 @@ configuration system. Removing a character archives its YAML under
 - Read-only macOS presence signals suppress proactive speech during meetings,
   full-screen apps, Focus mode, lock screen, likely microphone use, or extended
   absence. No window titles or activity contents are stored.
+- Upcoming commitments and the most recent expression tone can shape the topic;
+  all existing dedupe, quiet-hour, daily-limit, and environment rules still apply.
 
 ### Encrypted backup vault
 
@@ -83,6 +97,23 @@ The integration wraps the official
 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) local API.
 Reference audio and voice profiles are stored per character. Only clone a voice
 you own or have explicit permission to use.
+
+- GPT-SoVITS streaming mode is enabled for earlier first-sentence delivery.
+- Synthesized phrases are cached locally by text and voice identity. Cache files
+  are excluded from backups and can be cleared from the console.
+
+### Diagnostics and memory budget
+
+The diagnostics center records only local duration, success, cache-hit and peak
+process-memory metrics; it never stores conversation text.
+
+- Base local chat: approximately 5–7 GB RAM.
+- Chat plus GPT-SoVITS: approximately 8–12 GB RAM.
+- Simultaneous LLM, semantic retrieval and voice activity: reserve 12–16 GB.
+
+These are working-set estimates rather than additional disk downloads. The new
+continuity, reminder, diagnostics and cache-management code itself normally adds
+only tens of megabytes.
 
 ## Data and privacy
 

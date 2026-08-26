@@ -106,6 +106,14 @@ def can_trigger(conf_uid: str, settings: dict[str, Any]) -> tuple[bool, str]:
 
 
 def choose_topic(conf_uid: str, settings: dict[str, Any]) -> str:
+    try:
+        from .commitment_manager import due_topic
+
+        commitment = due_topic(conf_uid)
+        if commitment:
+            return commitment
+    except Exception:
+        pass
     topics = [
         str(topic).strip() for topic in settings.get("topics", []) if str(topic).strip()
     ]
@@ -115,11 +123,22 @@ def choose_topic(conf_uid: str, settings: dict[str, Any]) -> str:
     entry = _entry(state, conf_uid)
     window = max(1, min(10, int(settings.get("recent_topic_window", 4))))
     recent = entry.get("recent_topics", [])[-window:]
-    available = [topic for topic in topics if topic not in recent]
+    available = [
+        topic for topic in topics if not any(topic in str(item) for item in recent)
+    ]
     if not available:
         available = topics
     index = int(entry.get("daily_count", 0)) % len(available)
-    return available[index]
+    selected = available[index]
+    try:
+        from .relationship_state import load as load_relationship
+
+        recent_moods = load_relationship(conf_uid).get("recent_moods", [])
+        if recent_moods and recent_moods[-1].get("mood") == "低落":
+            return f"温和承接对方上次偏低落的状态，再自然聊到：{selected}"
+    except Exception:
+        pass
+    return selected
 
 
 def record_trigger(conf_uid: str, topic: str) -> None:

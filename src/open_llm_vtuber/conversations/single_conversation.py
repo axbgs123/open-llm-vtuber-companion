@@ -101,6 +101,9 @@ async def process_single_conversation(
                 base_prompt = await context.construct_system_prompt(
                     context.character_config.persona_prompt
                 )
+                from ..relationship_state import prompt_context
+
+                base_prompt += prompt_context(context.character_config.conf_uid)
                 if (
                     memory_settings["fts_enabled"]
                     and isinstance(input_text, str)
@@ -212,6 +215,20 @@ async def process_single_conversation(
                 avatar=context.character_config.avatar,
             )
             logger.info(f"AI response: {full_response}")
+
+        if isinstance(input_text, str) and input_text.strip() and not (
+            metadata and metadata.get("proactive_speak")
+        ):
+            try:
+                from ..commitment_manager import extract_from_turn
+                from ..relationship_state import update_from_turn
+
+                extract_from_turn(context.character_config.conf_uid, input_text)
+                update_from_turn(
+                    context.character_config.conf_uid, input_text, full_response
+                )
+            except Exception as continuity_error:
+                logger.warning(f"[continuity] turn update failed: {continuity_error}")
 
         # Consolidate durable facts in the background. Each role owns its own
         # core_memory.md, while the complete transcript remains searchable via FTS5.
