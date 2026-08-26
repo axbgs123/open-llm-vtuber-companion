@@ -69,6 +69,9 @@ class WebSocketHandler:
         self.current_conversation_tasks: Dict[str, Optional[asyncio.Task]] = {}
         self.default_context_cache = default_context_cache
         self.received_data_buffers: Dict[str, np.ndarray] = {}
+        self._last_human_activity: Dict[str, float] = {}
+        self._proactive_next_at: Dict[str, float] = {}
+        self._proactive_tasks: Dict[str, asyncio.Task] = {}
 
         # Message handlers mapping
         self._message_handlers = self._init_message_handlers()
@@ -124,6 +127,15 @@ class WebSocketHandler:
             )
 
             logger.info(f"Connection established for client {client_uid}")
+            now = asyncio.get_running_loop().time()
+            self._last_human_activity[client_uid] = now
+            self._proactive_next_at[client_uid] = now
+            self._proactive_tasks[client_uid] = asyncio.create_task(
+                self._proactive_idle_loop(client_uid)
+            )
+            from .runtime_manager import client_connected
+
+            client_connected()
 
         except Exception as e:
             logger.error(
@@ -252,12 +264,76 @@ class WebSocketHandler:
             logger.warning("Message received without type")
             return
 
+        if msg_type in {"text-input", "mic-audio-data", "mic-audio-end"}:
+            now = asyncio.get_running_loop().time()
+            self._last_human_activity[client_uid] = now
+            self._proactive_next_at[client_uid] = now
+            from .runtime_manager import note_activity
+
+            note_activity()
+            from .proactive_manager import record_human_response
+
+            context = self.client_contexts.get(client_uid)
+            if context:
+                record_human_response(context.character_config.conf_uid)
+
         handler = self._message_handlers.get(msg_type)
         if handler:
             await handler(websocket, client_uid, data)
         else:
             if msg_type != "frontend-playback-complete":
                 logger.warning(f"Unknown message type: {msg_type}")
+
+    async def _proactive_idle_loop(self, client_uid: str) -> None:
+        """Start a conversation after human inactivity, independent of the UI."""
+        from .companion_routes import get_proactive_settings, write_proactive_prompt
+        from .proactive_manager import (
+            can_trigger,
+            choose_topic,
+            effective_idle_seconds,
+            record_trigger,
+        )
+
+        try:
+            while client_uid in self.client_connections:
+                await asyncio.sleep(5)
+                settings = get_proactive_settings()
+                context = self.client_contexts.get(client_uid)
+                if context is None:
+                    return
+                conf_uid = context.character_config.conf_uid
+                allowed, _reason = can_trigger(conf_uid, settings)
+                if not allowed:
+                    continue
+                now = asyncio.get_running_loop().time()
+                last = self._last_human_activity.get(client_uid, now)
+                effective_idle = effective_idle_seconds(conf_uid, settings)
+                if now - last < effective_idle:
+                    continue
+                if now < self._proactive_next_at.get(client_uid, 0):
+                    continue
+                active = self.current_conversation_tasks.get(client_uid)
+                if active is not None and not active.done():
+                    continue
+                websocket = self.client_connections.get(client_uid)
+                if websocket is None or client_uid not in self.client_contexts:
+                    return
+                topic = choose_topic(conf_uid, settings)
+                write_proactive_prompt(settings, topic)
+                record_trigger(conf_uid, topic)
+                self._last_human_activity[client_uid] = now
+                self._proactive_next_at[client_uid] = now + settings["cooldown_seconds"]
+                logger.info(
+                    f"[proactive] idle trigger for {client_uid} "
+                    f"after {effective_idle}s (topic={topic})"
+                )
+                await self._handle_conversation_trigger(
+                    websocket, client_uid, {"type": "ai-speak-signal"}
+                )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(f"[proactive] idle loop stopped for {client_uid}: {exc}")
 
     async def _handle_group_operation(
         self, websocket: WebSocket, client_uid: str, data: dict
@@ -297,7 +373,17 @@ class WebSocketHandler:
             send_group_update=self.send_group_update,
         )
 
+        proactive_task = self._proactive_tasks.pop(client_uid, None)
+        if proactive_task and not proactive_task.done():
+            proactive_task.cancel()
+        self._last_human_activity.pop(client_uid, None)
+        self._proactive_next_at.pop(client_uid, None)
+        from .runtime_manager import client_disconnected
+
+        client_disconnected()
+
         # Clean up other client data
+        context = self.client_contexts.get(client_uid)
         self.client_connections.pop(client_uid, None)
         self.client_contexts.pop(client_uid, None)
         self.received_data_buffers.pop(client_uid, None)
@@ -308,7 +394,6 @@ class WebSocketHandler:
             self.current_conversation_tasks.pop(client_uid, None)
 
         # Call context close to clean up resources (e.g., MCPClient)
-        context = self.client_contexts.get(client_uid)
         if context:
             await context.close()
 
@@ -317,6 +402,11 @@ class WebSocketHandler:
 
     async def _cleanup_failed_connection(self, client_uid: str) -> None:
         """Clean up failed connection data"""
+        proactive_task = self._proactive_tasks.pop(client_uid, None)
+        if proactive_task and not proactive_task.done():
+            proactive_task.cancel()
+        self._last_human_activity.pop(client_uid, None)
+        self._proactive_next_at.pop(client_uid, None)
         self.client_connections.pop(client_uid, None)
         self.client_contexts.pop(client_uid, None)
         self.received_data_buffers.pop(client_uid, None)

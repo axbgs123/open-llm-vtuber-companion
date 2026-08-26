@@ -75,4 +75,9 @@ tmp/
 private/
 mcp_servers.json
 
+# Built-in companion feature runtime data and optional voice-clone backend
+companion_data/
+integrations/gpt_sovits/miniforge/
+integrations/gpt_sovits/GPT-SoVITS/
+
 .vscode/

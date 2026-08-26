@@ -27,6 +27,15 @@ class CharacterConfig(I18nMixin):
     tts_preprocessor_config: TTSPreprocessorConfig = Field(
         ..., alias="tts_preprocessor_config"
     )
+    long_term_memory_enabled: bool = Field(
+        default=True, alias="long_term_memory_enabled"
+    )
+    core_memory_max_chars: int = Field(default=1500, alias="core_memory_max_chars")
+    fts_memory_enabled: bool = Field(default=True, alias="fts_memory_enabled")
+    fts_memory_top_k: int = Field(default=3, alias="fts_memory_top_k")
+    memory_consolidation_interval: int = Field(
+        default=1, alias="memory_consolidation_interval"
+    )
 
     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
         "conf_name": Description(
@@ -67,7 +76,49 @@ class CharacterConfig(I18nMixin):
         "avatar": Description(
             en="Avatar image path for the character", zh="角色头像图片路径"
         ),
+        "long_term_memory_enabled": Description(
+            en="Enable per-character long-term memory",
+            zh="启用每个角色独立的长期记忆",
+        ),
+        "core_memory_max_chars": Description(
+            en="Maximum core-memory characters (500-8000)",
+            zh="核心记忆字数上限（500-8000）",
+        ),
+        "fts_memory_enabled": Description(
+            en="Search all past conversations with local SQLite FTS5",
+            zh="使用本地 SQLite FTS5 检索全部历史对话",
+        ),
+        "fts_memory_top_k": Description(
+            en="Number of retrieved history snippets per turn (1-10)",
+            zh="每轮检索的历史片段数量（1-10）",
+        ),
+        "memory_consolidation_interval": Description(
+            en="Consolidate core memory every 1, 3, or 5 turns",
+            zh="每 1、3 或 5 轮整理一次核心记忆",
+        ),
     }
+
+    @field_validator("core_memory_max_chars")
+    def clamp_core_memory_max_chars(cls, v):
+        try:
+            return max(500, min(8000, int(v)))
+        except (TypeError, ValueError):
+            return 1500
+
+    @field_validator("fts_memory_top_k")
+    def clamp_fts_memory_top_k(cls, v):
+        try:
+            return max(1, min(10, int(v)))
+        except (TypeError, ValueError):
+            return 3
+
+    @field_validator("memory_consolidation_interval")
+    def clamp_memory_consolidation_interval(cls, v):
+        try:
+            value = int(v)
+        except (TypeError, ValueError):
+            return 1
+        return value if value in (1, 3, 5) else 1
 
     @field_validator("persona_prompt")
     def check_default_persona_prompt(cls, v):

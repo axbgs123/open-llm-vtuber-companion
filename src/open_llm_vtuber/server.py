@@ -15,6 +15,8 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles as StarletteStaticFiles
 
 from .routes import init_client_ws_route, init_webtool_routes, init_proxy_route
+from .companion_routes import init_companion_routes
+from .runtime_manager import start_monitor, stop_monitor
 from .service_context import ServiceContext
 from .config_manager.utils import Config
 
@@ -96,6 +98,15 @@ class WebSocketServer:
         self.app.include_router(
             init_webtool_routes(default_context_cache=self.default_context_cache),
         )
+        self.app.include_router(init_companion_routes())
+
+        @self.app.on_event("startup")
+        async def _start_companion_runtime():
+            start_monitor()
+
+        @self.app.on_event("shutdown")
+        async def _stop_companion_runtime():
+            await stop_monitor()
 
         # Initialize and include proxy routes if proxy is enabled
         system_config = config.system_config
@@ -139,6 +150,12 @@ class WebSocketServer:
             "/web-tool",
             CORSStaticFiles(directory="web_tool", html=True),
             name="web_tool",
+        )
+
+        self.app.mount(
+            "/companion",
+            CORSStaticFiles(directory="companion_ui", html=True),
+            name="companion_ui",
         )
 
         # Mount main frontend last (as catch-all)

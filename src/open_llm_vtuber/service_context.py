@@ -464,6 +464,21 @@ class ServiceContext:
 
             persona_prompt += prompt_content
 
+        from .companion_routes import get_memory_settings
+
+        memory_settings = get_memory_settings(
+            self.character_config.conf_uid, self.character_config
+        )
+        if memory_settings["enabled"]:
+            from .memory_core import load_core_memory
+
+            core_memory = load_core_memory(self.character_config.conf_uid)
+            if core_memory:
+                persona_prompt += (
+                    "\n\n## 你对使用者的长期记忆"
+                    "（来自之前的对话；自然运用，不要机械复述）\n" + core_memory
+                )
+
         logger.debug("\n === System Prompt ===")
         logger.debug(persona_prompt)
 

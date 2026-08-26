@@ -21,6 +21,9 @@ from ..service_context import ServiceContext
 # Import necessary types from agent outputs
 from ..agent.output_types import SentenceOutput, AudioOutput
 
+_BACKGROUND_MEMORY_TASKS: set[asyncio.Task] = set()
+_MEMORY_TURN_COUNTS: dict[tuple[str, str], int] = {}
+
 
 async def process_single_conversation(
     context: ServiceContext,
@@ -84,6 +87,57 @@ async def process_single_conversation(
         logger.info(f"User input: {input_text}")
         if images:
             logger.info(f"With {len(images)} images")
+
+        # Refresh per-character core memory and optionally inject relevant snippets
+        # from every saved conversation before asking the model.
+        try:
+            from ..companion_routes import get_memory_settings
+
+            memory_settings = get_memory_settings(
+                context.character_config.conf_uid, context.character_config
+            )
+            agent = context.agent_engine
+            if hasattr(agent, "set_system"):
+                base_prompt = await context.construct_system_prompt(
+                    context.character_config.persona_prompt
+                )
+                if (
+                    memory_settings["fts_enabled"]
+                    and isinstance(input_text, str)
+                    and input_text.strip()
+                    and not (metadata and metadata.get("proactive_speak"))
+                ):
+                    from .. import memory_fts, memory_semantic
+
+                    if memory_settings.get(
+                        "semantic_enabled"
+                    ) and memory_semantic.index_exists(
+                        context.character_config.conf_uid
+                    ):
+                        detailed = await memory_semantic.hybrid_search(
+                            context.character_config.conf_uid,
+                            input_text,
+                            k=memory_settings["top_k"],
+                        )
+                        snippets = [item["snippet"] for item in detailed]
+                    else:
+                        snippets = memory_fts.search(
+                            context.character_config.conf_uid,
+                            input_text,
+                            k=memory_settings["top_k"],
+                        )
+                    if snippets:
+                        base_prompt += (
+                            f"\n\n{memory_fts.RETRIEVAL_LABEL}"
+                            "（仅供回忆参考；若与当前对话无关就忽略）\n"
+                            + "\n".join(snippets)
+                        )
+                        logger.info(
+                            f"[fts] injected {len(snippets)} history snippet(s)"
+                        )
+                agent.set_system(base_prompt)
+        except Exception as memory_error:
+            logger.warning(f"[memory] prompt refresh failed: {memory_error}")
 
         try:
             # agent.chat yields Union[SentenceOutput, Dict[str, Any]]
@@ -158,6 +212,81 @@ async def process_single_conversation(
                 avatar=context.character_config.avatar,
             )
             logger.info(f"AI response: {full_response}")
+
+        # Consolidate durable facts in the background. Each role owns its own
+        # core_memory.md, while the complete transcript remains searchable via FTS5.
+        try:
+            from ..companion_routes import get_memory_settings
+
+            memory_settings = get_memory_settings(
+                context.character_config.conf_uid, context.character_config
+            )
+            is_proactive = bool(metadata and metadata.get("proactive_speak"))
+            if (
+                memory_settings["enabled"]
+                and not is_proactive
+                and isinstance(input_text, str)
+                and input_text.strip()
+                and full_response.strip()
+            ):
+                from ..memory_core import consolidate_core_memory, _clamp_interval
+
+                agent_config = context.character_config.agent_config
+                basic_settings = agent_config.agent_settings.basic_memory_agent
+                provider_name = basic_settings.llm_provider
+                llm_config = getattr(agent_config.llm_configs, provider_name)
+                interval = _clamp_interval(memory_settings["consolidation_interval"])
+                count_key = (context.character_config.conf_uid, client_uid)
+                turn_count = _MEMORY_TURN_COUNTS.get(count_key, 0) + 1
+                _MEMORY_TURN_COUNTS[count_key] = turn_count
+                if turn_count % interval == 0 and all(
+                    hasattr(llm_config, field)
+                    for field in ("base_url", "model", "llm_api_key")
+                ):
+                    task = asyncio.create_task(
+                        consolidate_core_memory(
+                            context.character_config.conf_uid,
+                            input_text,
+                            full_response,
+                            llm_config.base_url,
+                            llm_config.model,
+                            cap=memory_settings["max_chars"],
+                            api_key=llm_config.llm_api_key,
+                            source_history_uid=context.history_uid,
+                        )
+                    )
+                    _BACKGROUND_MEMORY_TASKS.add(task)
+                    task.add_done_callback(_BACKGROUND_MEMORY_TASKS.discard)
+        except Exception as memory_error:
+            logger.warning(f"[memory] consolidation scheduling failed: {memory_error}")
+
+        try:
+            semantic_settings = get_memory_settings(
+                context.character_config.conf_uid, context.character_config
+            )
+        except Exception:
+            semantic_settings = {}
+        if (
+            semantic_settings.get("semantic_enabled")
+            and context.history_uid
+            and isinstance(input_text, str)
+            and full_response.strip()
+        ):
+            try:
+                from ..memory_semantic import append_turn
+
+                semantic_task = asyncio.create_task(
+                    append_turn(
+                        context.character_config.conf_uid,
+                        context.history_uid,
+                        input_text,
+                        full_response,
+                    )
+                )
+                _BACKGROUND_MEMORY_TASKS.add(semantic_task)
+                semantic_task.add_done_callback(_BACKGROUND_MEMORY_TASKS.discard)
+            except Exception as memory_error:
+                logger.warning(f"[semantic] incremental index failed: {memory_error}")
 
         return full_response  # Return accumulated full_response
 

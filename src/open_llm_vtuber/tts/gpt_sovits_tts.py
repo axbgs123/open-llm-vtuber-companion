@@ -32,6 +32,12 @@ class TTSEngine(TTSInterface):
         self.streaming_mode = streaming_mode
 
     def generate_audio(self, text, file_name_no_ext=None):
+        from ..runtime_manager import ensure_gpt_sovits_blocking, note_voice_activity
+
+        if not ensure_gpt_sovits_blocking():
+            logger.error("GPT-SoVITS could not be started on demand")
+            return None
+        note_voice_activity()
         file_name = self.generate_cache_file_name(file_name_no_ext, self.media_type)
         cleaned_text = re.sub(r"\[.*?\]", "", text)
         # Prepare the data for the POST request
