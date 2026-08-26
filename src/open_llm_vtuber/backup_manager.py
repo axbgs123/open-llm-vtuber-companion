@@ -8,7 +8,9 @@ import hashlib
 import io
 import json
 import os
+import threading
 import zipfile
+from functools import wraps
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +31,16 @@ BACKUP_SCHEMA = 1
 DEFAULT_RETENTION = {"max_backups": 30, "keep_safety": 10}
 
 _daily_task: asyncio.Task | None = None
+_backup_lock = threading.RLock()
+
+
+def _serialized(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with _backup_lock:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _key() -> bytes:
@@ -191,6 +203,7 @@ def _backup_manifest(path: Path) -> dict[str, Any]:
         return json.loads(archive.read("manifest.json"))
 
 
+@_serialized
 def create_backup(
     *,
     scope: str = "global",
@@ -207,7 +220,20 @@ def create_backup(
     hashes = {str(path.relative_to(ROOT)): _hash(path) for path in files}
     base = ""
     deleted: list[str] = []
-    if scope == "global" and incremental and index.get("last_global"):
+    last_global = str(index.get("last_global") or "")
+    base_path = BACKUP_DIR / Path(last_global).name if last_global else None
+    base_usable = False
+    if base_path is not None and base_path.is_file():
+        try:
+            base_chain = _chain(last_global)
+            for _, archive in base_chain:
+                archive.close()
+            base_usable = True
+        except Exception as exc:
+            logger.warning(
+                f"[backup] incremental base is unusable; creating full: {exc}"
+            )
+    if scope == "global" and incremental and last_global and base_usable:
         previous = index.get("last_hashes", {})
         files = [
             path
@@ -216,7 +242,7 @@ def create_backup(
             != hashes[str(path.relative_to(ROOT))]
         ]
         deleted = sorted(set(previous) - set(hashes))
-        base = str(index.get("last_global") or "")
+        base = last_global
     created = dt.datetime.now().astimezone()
     stamp = created.strftime("%Y%m%d-%H%M%S-%f")
     uid_suffix = f"-{conf_uid}" if conf_uid else ""
@@ -224,7 +250,7 @@ def create_backup(
     filename = f"{stamp}-{scope}{uid_suffix}-{mode}.aicbackup"
     manifest = {
         "schema": BACKUP_SCHEMA,
-        "created_at": created.isoformat(timespec="seconds"),
+        "created_at": created.isoformat(timespec="microseconds"),
         "scope": scope,
         "conf_uid": conf_uid,
         "mode": mode,
@@ -289,13 +315,17 @@ def preview_backup(filename: str) -> dict[str, Any]:
         for manifest, archive in chain:
             deleted.update(str(item) for item in manifest.get("deleted", []))
             for name in archive.namelist():
-                if name in {"manifest.json", "__character_state__.json"} or name.endswith("/"):
+                if name in {
+                    "manifest.json",
+                    "__character_state__.json",
+                } or name.endswith("/"):
                     continue
                 target = (ROOT / name).resolve()
                 if not is_within(str(ROOT), str(target)):
                     raise ValueError("backup contains unsafe path")
                 effective.add(name)
                 deleted.discard(name)
+        effective.difference_update(deleted)
         created = sorted(name for name in effective if not (ROOT / name).is_file())
         overwritten = sorted(name for name in effective if (ROOT / name).is_file())
         removed = sorted(name for name in deleted if (ROOT / name).is_file())
@@ -305,13 +335,21 @@ def preview_backup(filename: str) -> dict[str, Any]:
             "conf_uid": final.get("conf_uid", ""),
             "created_at": final.get("created_at", ""),
             "chain": [
-                *[str(manifest.get("base")) for manifest, _ in chain if manifest.get("base")],
+                *[
+                    str(manifest.get("base"))
+                    for manifest, _ in chain
+                    if manifest.get("base")
+                ],
                 Path(filename).name,
             ],
             "created": created,
             "overwritten": overwritten,
             "deleted": removed,
-            "counts": {"created": len(created), "overwritten": len(overwritten), "deleted": len(removed)},
+            "counts": {
+                "created": len(created),
+                "overwritten": len(overwritten),
+                "deleted": len(removed),
+            },
         }
     finally:
         for _, archive in chain:
@@ -343,13 +381,22 @@ def save_retention(incoming: dict[str, Any]) -> dict[str, int]:
     return settings
 
 
+@_serialized
 def prune_backups() -> dict[str, Any]:
     settings = get_retention()
     records = list_backups()
-    safety = [row for row in records if row.get("reason") not in {"manual", "automatic", "test"}]
+    safety = [
+        row
+        for row in records
+        if row.get("reason") not in {"manual", "automatic", "test"}
+    ]
     keep_names = {row["filename"] for row in records[: settings["max_backups"]]}
     keep_names.update(row["filename"] for row in safety[: settings["keep_safety"]])
     by_name = {row["filename"]: row for row in records}
+    index = _index()
+    last_global = str(index.get("last_global") or "")
+    if last_global in by_name:
+        keep_names.add(last_global)
     pending = list(keep_names)
     while pending:
         name = pending.pop()
@@ -362,8 +409,20 @@ def prune_backups() -> dict[str, Any]:
         if row["filename"] not in keep_names:
             (BACKUP_DIR / row["filename"]).unlink(missing_ok=True)
             removed.append(row["filename"])
-    index = _index()
-    index["backups"] = [row for row in index.get("backups", []) if row.get("filename") in keep_names]
+    index["backups"] = [
+        row for row in index.get("backups", []) if row.get("filename") in keep_names
+    ]
+    if last_global not in keep_names:
+        newest_global = next(
+            (
+                row
+                for row in records
+                if row.get("scope") == "global" and row["filename"] in keep_names
+            ),
+            None,
+        )
+        index["last_global"] = newest_global["filename"] if newest_global else ""
+        index["last_hashes"] = {}
     _save_index(index)
     return {"removed": removed, "kept": len(keep_names)}
 
@@ -381,7 +440,11 @@ def _chain(
     payload = io.BytesIO(_read_encrypted(path))
     archive = zipfile.ZipFile(payload)
     manifest = json.loads(archive.read("manifest.json"))
-    chain = _chain(manifest["base"], seen) if manifest.get("base") else []
+    try:
+        chain = _chain(manifest["base"], seen) if manifest.get("base") else []
+    except Exception:
+        archive.close()
+        raise
     chain.append((manifest, archive))
     return chain
 

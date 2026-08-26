@@ -33,25 +33,65 @@ def save(conf_uid: str, rows: list[dict[str, Any]]) -> None:
     path = _path(conf_uid)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.write_text(
+        json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     os.replace(temp, path)
 
 
 def parse_due(text: str, now: dt.datetime | None = None) -> str:
     now = now or _now()
     day = now.date()
-    if "后天" in text or "後天" in text:
+    explicit_day = False
+    weekday_match = re.search(r"下(?:周|週)(?P<weekday>[一二三四五六日天])", text)
+    if weekday_match:
+        weekday = "一二三四五六日天".index(weekday_match.group("weekday"))
+        if weekday >= 7:
+            weekday = 6
+        next_monday = day + dt.timedelta(days=7 - day.weekday())
+        day = next_monday + dt.timedelta(days=weekday)
+        explicit_day = True
+    elif "后天" in text or "後天" in text:
         day += dt.timedelta(days=2)
+        explicit_day = True
     elif "明天" in text:
         day += dt.timedelta(days=1)
+        explicit_day = True
     elif "下周" in text or "下週" in text:
         day += dt.timedelta(days=7)
+        explicit_day = True
     elif "周末" in text or "週末" in text:
         day += dt.timedelta(days=(5 - day.weekday()) % 7 or 7)
-    match = re.search(r"(?P<h>\d{1,2})(?:[:：点時时])(?P<m>\d{1,2})?", text)
-    hour = max(0, min(23, int(match.group("h")))) if match else 9
-    minute = max(0, min(59, int(match.group("m") or 0))) if match else 0
-    return dt.datetime.combine(day, dt.time(hour, minute), tzinfo=now.tzinfo).isoformat(timespec="minutes")
+        explicit_day = True
+    is_today = any(word in text for word in ("今天", "今日", "今晚", "今早"))
+    if is_today:
+        explicit_day = True
+    match = re.search(
+        r"(?P<h>\d{1,2})(?:[:：点時时])(?:(?P<half>半)|(?P<m>\d{1,2})分?)?",
+        text,
+    )
+    default_hour = (
+        20 if "今晚" in text else 9 if "今早" in text else 18 if is_today else 9
+    )
+    hour = max(0, min(23, int(match.group("h")))) if match else default_hour
+    minute = 30 if match and match.group("half") else 0
+    if match and match.group("m"):
+        minute = max(0, min(59, int(match.group("m"))))
+    if any(word in text for word in ("下午", "晚上", "今晚", "傍晚")) and hour < 12:
+        hour += 12
+    elif "中午" in text and hour < 11:
+        hour += 12
+    elif "凌晨" in text and hour == 12:
+        hour = 0
+    due = dt.datetime.combine(day, dt.time(hour, minute), tzinfo=now.tzinfo)
+    if due <= now and is_today and match is None:
+        due = min(
+            now + dt.timedelta(hours=1),
+            dt.datetime.combine(day, dt.time(23, 59), tzinfo=now.tzinfo),
+        )
+    if due <= now and not explicit_day:
+        due += dt.timedelta(days=1)
+    return due.isoformat(timespec="minutes")
 
 
 def extract_from_turn(conf_uid: str, text: str) -> list[dict[str, Any]]:
@@ -101,7 +141,9 @@ def create(conf_uid: str, content: str, due_at: str) -> dict[str, Any]:
     except Exception as exc:
         raise ValueError("invalid due time") from exc
     rows = load(conf_uid)
-    fingerprint = hashlib.sha256(f"{content}\0{due.isoformat()}".encode()).hexdigest()[:16]
+    fingerprint = hashlib.sha256(f"{content}\0{due.isoformat()}".encode()).hexdigest()[
+        :16
+    ]
     row = {
         "id": fingerprint,
         "content": content,

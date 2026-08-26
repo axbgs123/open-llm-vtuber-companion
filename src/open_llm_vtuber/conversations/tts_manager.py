@@ -66,9 +66,13 @@ class TTSTaskManager:
             f"🏃Queuing TTS task for: '''{tts_text}''' (by {display_text.name})"
         )
 
-        # Get current sequence number
+        splitter = getattr(tts_engine, "split_streaming_text", None)
+        fragments = splitter(tts_text) if callable(splitter) else [tts_text]
+        fragments = [fragment for fragment in fragments if fragment.strip()] or [
+            tts_text
+        ]
         current_sequence = self._sequence_counter
-        self._sequence_counter += 1
+        self._sequence_counter += len(fragments)
 
         # Start sender task if not running
         if not self._sender_task or self._sender_task.done():
@@ -76,18 +80,56 @@ class TTSTaskManager:
                 self._process_payload_queue(websocket_send)
             )
 
-        # Create and queue the TTS task
-        task = asyncio.create_task(
-            self._process_tts(
-                tts_text=tts_text,
-                display_text=display_text,
-                actions=actions,
+        if len(fragments) > 1:
+            task = asyncio.create_task(
+                self._process_tts_fragments(
+                    fragments=fragments,
+                    display_text=display_text,
+                    actions=actions,
+                    live2d_model=live2d_model,
+                    tts_engine=tts_engine,
+                    first_sequence=current_sequence,
+                )
+            )
+        else:
+            task = asyncio.create_task(
+                self._process_tts(
+                    tts_text=fragments[0],
+                    display_text=display_text,
+                    actions=actions,
+                    live2d_model=live2d_model,
+                    tts_engine=tts_engine,
+                    sequence_number=current_sequence,
+                )
+            )
+        self.task_list.append(task)
+
+    async def _process_tts_fragments(
+        self,
+        fragments: list[str],
+        display_text: DisplayText,
+        actions: Optional[Actions],
+        live2d_model: Live2dModel,
+        tts_engine: TTSInterface,
+        first_sequence: int,
+    ) -> None:
+        """Generate and deliver short phrases sequentially so playback starts early."""
+        for index, fragment in enumerate(fragments):
+            fragment_display = (
+                display_text
+                if index == 0
+                else DisplayText(
+                    text="", name=display_text.name, avatar=display_text.avatar
+                )
+            )
+            await self._process_tts(
+                tts_text=fragment,
+                display_text=fragment_display,
+                actions=actions if index == 0 else None,
                 live2d_model=live2d_model,
                 tts_engine=tts_engine,
-                sequence_number=current_sequence,
+                sequence_number=first_sequence + index,
             )
-        )
-        self.task_list.append(task)
 
     async def _process_payload_queue(self, websocket_send: WebSocketSend) -> None:
         """

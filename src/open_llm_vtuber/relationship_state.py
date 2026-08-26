@@ -12,7 +12,20 @@ from typing import Any
 from .utils.path_safety import safe_join
 
 POSITIVE = ("开心", "高兴", "顺利", "喜欢", "谢谢", "太好了", "興奮", "期待")
-NEGATIVE = ("难过", "烦", "累", "焦虑", "生气", "失望", "压力", "不开心", "難過")
+NEGATIVE = (
+    "不开心",
+    "不喜欢",
+    "难过",
+    "烦",
+    "累",
+    "焦虑",
+    "生气",
+    "失望",
+    "压力",
+    "討厭",
+    "讨厌",
+    "難過",
+)
 
 
 def _path(conf_uid: str) -> Path:
@@ -33,21 +46,36 @@ def _save(conf_uid: str, state: dict[str, Any]) -> None:
     path = _path(conf_uid)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     os.replace(temp, path)
 
 
-def update_from_turn(conf_uid: str, user_text: str, ai_text: str = "") -> dict[str, Any]:
+def update_from_turn(
+    conf_uid: str, user_text: str, ai_text: str = ""
+) -> dict[str, Any]:
     state = load(conf_uid)
-    positive = sum(word in user_text for word in POSITIVE)
     negative = sum(word in user_text for word in NEGATIVE)
+    positive_text = user_text
+    for phrase in NEGATIVE:
+        positive_text = positive_text.replace(phrase, "")
+    positive = sum(word in positive_text for word in POSITIVE)
     mood = "低落" if negative > positive else "轻快" if positive > negative else "平稳"
     state["turns"] = int(state.get("turns", 0)) + 1
-    state["warmth"] = max(0, min(100, int(state.get("warmth", 50)) + (1 if ai_text else 0)))
+    state["warmth"] = max(
+        0, min(100, int(state.get("warmth", 50)) + (1 if ai_text else 0))
+    )
     length_score = min(4, len(re.sub(r"\s+", "", user_text)) // 30)
-    state["engagement"] = max(0, min(100, int(state.get("engagement", 50)) - 1 + length_score))
+    state["engagement"] = max(
+        0, min(100, int(state.get("engagement", 50)) - 1 + length_score)
+    )
     state.setdefault("recent_moods", []).append(
-        {"mood": mood, "excerpt": user_text[:80], "at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+        {
+            "mood": mood,
+            "excerpt": user_text[:80],
+            "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
     )
     state["recent_moods"] = state["recent_moods"][-8:]
     _save(conf_uid, state)

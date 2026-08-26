@@ -1,10 +1,13 @@
+import asyncio
 import json
 import os
 import tempfile
 import unittest
 import datetime as dt
+import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from src.open_llm_vtuber import (
     companion_routes,
@@ -22,6 +25,8 @@ from src.open_llm_vtuber import (
     environment_awareness,
 )
 from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
+from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
+from src.open_llm_vtuber.agent.output_types import Actions, DisplayText
 
 
 class CompanionFeatureTests(unittest.TestCase):
@@ -159,6 +164,8 @@ class CompanionFeatureTests(unittest.TestCase):
         (root / "characters").mkdir()
         (root / "chat_history").mkdir()
         (root / "companion_data").mkdir()
+        removed_path = root / "companion_data" / "removed.json"
+        removed_path.write_text("{}", encoding="utf-8")
         backup_dir = root / "backups"
         with (
             patch.object(backup_manager, "ROOT", root),
@@ -170,20 +177,26 @@ class CompanionFeatureTests(unittest.TestCase):
             patch.object(
                 backup_manager, "KEYRING_DIR", root / "companion_data" / "backup_keys"
             ),
-            patch.object(backup_manager, "RETENTION_PATH", backup_dir / "retention.json"),
+            patch.object(
+                backup_manager, "RETENTION_PATH", backup_dir / "retention.json"
+            ),
         ):
             full = backup_manager.create_backup(scope="global", reason="test")
             encrypted = (backup_dir / full["filename"]).read_bytes()
             self.assertTrue(encrypted.startswith(backup_manager.MAGIC))
             self.assertNotIn(b"value: one", encrypted)
             (root / "conf.yaml").write_text("value: two\n", encoding="utf-8")
+            removed_path.unlink()
             incremental = backup_manager.create_backup(
                 scope="global", incremental=True, reason="test"
             )
             self.assertEqual(incremental["mode"], "incremental")
+            removed_path.write_text("current", encoding="utf-8")
             (root / "conf.yaml").write_text("broken\n", encoding="utf-8")
             preview = backup_manager.preview_backup(incremental["filename"])
             self.assertEqual(preview["counts"]["overwritten"], 1)
+            self.assertIn("companion_data/removed.json", preview["deleted"])
+            self.assertNotIn("companion_data/removed.json", preview["overwritten"])
             self.assertEqual(len(preview["chain"]), 2)
             backup_manager.restore_backup(incremental["filename"])
             self.assertEqual(
@@ -202,18 +215,28 @@ class CompanionFeatureTests(unittest.TestCase):
             patch.object(backup_manager, "ROOT", root),
             patch.object(backup_manager, "BACKUP_DIR", backup_dir),
             patch.object(backup_manager, "INDEX_PATH", backup_dir / "index.json"),
-            patch.object(backup_manager, "KEY_PATH", root / "companion_data" / ".backup.key"),
-            patch.object(backup_manager, "KEYRING_DIR", root / "companion_data" / "backup_keys"),
-            patch.object(backup_manager, "RETENTION_PATH", backup_dir / "retention.json"),
+            patch.object(
+                backup_manager, "KEY_PATH", root / "companion_data" / ".backup.key"
+            ),
+            patch.object(
+                backup_manager, "KEYRING_DIR", root / "companion_data" / "backup_keys"
+            ),
+            patch.object(
+                backup_manager, "RETENTION_PATH", backup_dir / "retention.json"
+            ),
         ):
             old_key = backup_manager.Fernet.generate_key()
             backup_manager.KEY_PATH.write_bytes(old_key + b"\n")
             foreign = backup_manager.create_backup(scope="global", reason="test")
-            backup_manager.KEY_PATH.write_bytes(backup_manager.Fernet.generate_key() + b"\n")
+            backup_manager.KEY_PATH.write_bytes(
+                backup_manager.Fernet.generate_key() + b"\n"
+            )
             imported = backup_manager.import_recovery_key(old_key)
             self.assertEqual(imported["status"], "imported")
             self.assertEqual(len(list(backup_manager.KEYRING_DIR.glob("*.key"))), 1)
-            self.assertEqual(backup_manager.preview_backup(foreign["filename"])["scope"], "global")
+            self.assertEqual(
+                backup_manager.preview_backup(foreign["filename"])["scope"], "global"
+            )
             for index in range(7):
                 (root / "conf.yaml").write_text(f"value: {index}\n", encoding="utf-8")
                 backup_manager.create_backup(scope="global", reason="test")
@@ -221,6 +244,52 @@ class CompanionFeatureTests(unittest.TestCase):
             result = backup_manager.prune_backups()
             self.assertEqual(len(result["removed"]), 3)
             self.assertEqual(len(backup_manager.list_backups()), 5)
+
+    def test_retention_keeps_incremental_base(self):
+        root = self.root / "retention-chain"
+        (root / "chat_history" / "role").mkdir(parents=True)
+        (root / "companion_data").mkdir()
+        (root / "characters").mkdir()
+        (root / "conf.yaml").write_text(
+            "character_config:\n  conf_uid: role\n", encoding="utf-8"
+        )
+        backup_dir = root / "backups"
+        with (
+            patch.object(backup_manager, "ROOT", root),
+            patch.object(backup_manager, "BACKUP_DIR", backup_dir),
+            patch.object(backup_manager, "INDEX_PATH", backup_dir / "index.json"),
+            patch.object(
+                backup_manager, "KEY_PATH", root / "companion_data" / ".backup.key"
+            ),
+            patch.object(
+                backup_manager, "KEYRING_DIR", root / "companion_data" / "backup_keys"
+            ),
+            patch.object(
+                backup_manager, "RETENTION_PATH", backup_dir / "retention.json"
+            ),
+        ):
+            full = backup_manager.create_backup(scope="global", reason="manual")
+            for index in range(6):
+                (root / "chat_history" / "role" / f"{index}.json").write_text("{}")
+                backup_manager.create_backup(
+                    scope="character", conf_uid="role", reason="manual"
+                )
+            backup_manager.save_retention({"max_backups": 5, "keep_safety": 1})
+            backup_manager.prune_backups()
+            self.assertTrue((backup_dir / full["filename"]).is_file())
+            (root / "conf.yaml").write_text(
+                "character_config:\n  conf_uid: role\nchanged: true\n", encoding="utf-8"
+            )
+            incremental = backup_manager.create_backup(scope="global", incremental=True)
+            self.assertEqual(incremental["base"], full["filename"])
+            self.assertEqual(
+                backup_manager.preview_backup(incremental["filename"])["scope"],
+                "global",
+            )
+            (backup_dir / full["filename"]).unlink()
+            fallback = backup_manager.create_backup(scope="global", incremental=True)
+            self.assertEqual(fallback["mode"], "full")
+            self.assertEqual(fallback["base"], "")
 
     def test_data_migration_adds_memory_metadata(self):
         root = self.root / "migration"
@@ -302,6 +371,22 @@ class CompanionFeatureTests(unittest.TestCase):
             rows = commitment_manager.update("role", created[0]["id"], "done")
             self.assertEqual(rows[0]["status"], "done")
 
+    def test_chinese_periods_and_relative_weekdays(self):
+        now = dt.datetime(2026, 8, 25, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        self.assertIn("T15:00", commitment_manager.parse_due("下午3点提醒我吃药", now))
+        self.assertIn("T20:00", commitment_manager.parse_due("今晚8点提醒我", now))
+        self.assertTrue(
+            commitment_manager.parse_due("下周三提醒我开会", now).startswith(
+                "2026-09-02"
+            )
+        )
+        self.assertGreater(
+            dt.datetime.fromisoformat(
+                commitment_manager.parse_due("今天要写周报", now)
+            ),
+            now,
+        )
+
     def test_relationship_continuity_tracks_recent_mood(self):
         with patch.object(
             relationship_state,
@@ -313,6 +398,14 @@ class CompanionFeatureTests(unittest.TestCase):
             )
             self.assertEqual(state["recent_moods"][-1]["mood"], "低落")
             self.assertIn("偏低落", relationship_state.prompt_context("role"))
+            state = relationship_state.update_from_turn(
+                "role", "我今天很不开心", "我在"
+            )
+            self.assertEqual(state["recent_moods"][-1]["mood"], "低落")
+            state = relationship_state.update_from_turn(
+                "role", "我不喜欢这件事", "明白"
+            )
+            self.assertEqual(state["recent_moods"][-1]["mood"], "低落")
 
     def test_diagnostics_aggregates_cache_hits(self):
         with patch.object(companion_diagnostics, "PATH", self.root / "diag.json"):
@@ -321,6 +414,97 @@ class CompanionFeatureTests(unittest.TestCase):
             metric = companion_diagnostics.summary()["metrics"][0]
             self.assertEqual(metric["average_ms"], 30)
             self.assertEqual(metric["cache_hits"], 1)
+
+    def test_diagnostics_concurrent_writes_do_not_fail(self):
+        with (
+            patch.object(companion_diagnostics, "DATA_DIR", self.root),
+            patch.object(
+                companion_diagnostics, "PATH", self.root / "concurrent-diag.json"
+            ),
+        ):
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                futures = [
+                    pool.submit(companion_diagnostics.record, "voice", index)
+                    for index in range(100)
+                ]
+                for future in futures:
+                    future.result()
+            self.assertEqual(companion_diagnostics.summary()["events"], 100)
+
+    def test_diagnostics_failure_never_breaks_caller(self):
+        with patch.object(
+            companion_diagnostics, "_save", side_effect=OSError("disk busy")
+        ):
+            companion_diagnostics.record("voice", 10)
+
+    def test_gpt_voice_uses_progressive_phrase_tasks(self):
+        async def exercise():
+            engine = GPTSoVITSEngine()
+            text = "这是第一段较短的话，用来尽快开始播放；这是第二段内容，用来验证后续片段按顺序生成。"
+            self.assertGreater(len(engine.split_streaming_text(text)), 1)
+            manager = TTSTaskManager()
+            manager._process_tts = AsyncMock()
+            await manager.speak(
+                text,
+                DisplayText(text=text, name="AI"),
+                Actions(),
+                None,
+                engine,
+                AsyncMock(),
+            )
+            await asyncio.gather(*manager.task_list)
+            calls = manager._process_tts.await_args_list
+            self.assertGreater(len(calls), 1)
+            self.assertEqual(calls[0].kwargs["display_text"].text, text)
+            self.assertEqual(calls[1].kwargs["display_text"].text, "")
+            manager.clear()
+
+        asyncio.run(exercise())
+
+    def test_first_voice_fragment_is_queued_before_later_generation_finishes(self):
+        class FragmentEngine:
+            def __init__(self, root: Path):
+                self.root = root
+                self.calls = 0
+                self.second_started = asyncio.Event()
+                self.release_second = asyncio.Event()
+
+            async def async_generate_audio(self, text, file_name_no_ext=None):
+                self.calls += 1
+                if self.calls == 2:
+                    self.second_started.set()
+                    await self.release_second.wait()
+                path = self.root / f"fragment-{self.calls}.wav"
+                with wave.open(str(path), "wb") as audio:
+                    audio.setnchannels(1)
+                    audio.setsampwidth(2)
+                    audio.setframerate(16000)
+                    audio.writeframes(b"\1\0" * 160)
+                return str(path)
+
+            def remove_file(self, path):
+                Path(path).unlink(missing_ok=True)
+
+        async def exercise():
+            manager = TTSTaskManager()
+            engine = FragmentEngine(self.root)
+            task = asyncio.create_task(
+                manager._process_tts_fragments(
+                    ["第一片", "第二片"],
+                    DisplayText(text="完整文字", name="AI"),
+                    Actions(),
+                    None,
+                    engine,
+                    0,
+                )
+            )
+            await asyncio.wait_for(engine.second_started.wait(), timeout=2)
+            self.assertEqual(manager._payload_queue.qsize(), 1)
+            engine.release_second.set()
+            await task
+            self.assertEqual(manager._payload_queue.qsize(), 2)
+
+        asyncio.run(exercise())
 
     def test_voice_cache_works_without_starting_backend(self):
         engine = GPTSoVITSEngine(ref_audio_path="voice.wav", prompt_text="参考")

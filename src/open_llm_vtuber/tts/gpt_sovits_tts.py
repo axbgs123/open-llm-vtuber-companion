@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import shutil
+import uuid
 from pathlib import Path
 import requests
 from loguru import logger
@@ -38,10 +39,55 @@ class TTSEngine(TTSInterface):
     def _cache_path(self, text: str) -> Path:
         cache_dir = Path.cwd() / "companion_data" / "voice_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            ref = Path(self.ref_audio_path)
+            ref_signature = f"{ref.stat().st_size}:{ref.stat().st_mtime_ns}"
+        except Exception:
+            ref_signature = "missing"
         identity = "\0".join(
-            (text, self.ref_audio_path, self.prompt_text, self.text_lang, self.prompt_lang)
+            (
+                text,
+                self.api_url,
+                self.ref_audio_path,
+                ref_signature,
+                self.prompt_text,
+                self.text_lang,
+                self.prompt_lang,
+                self.text_split_method,
+            )
         )
-        return cache_dir / f"{hashlib.sha256(identity.encode()).hexdigest()}.{self.media_type}"
+        return (
+            cache_dir
+            / f"{hashlib.sha256(identity.encode()).hexdigest()}.{self.media_type}"
+        )
+
+    def split_streaming_text(self, text: str) -> list[str]:
+        """Create independently playable phrase fragments for progressive delivery."""
+        cleaned = str(text or "").strip()
+        if len(cleaned) <= 28:
+            return [cleaned]
+        pieces = [
+            piece
+            for piece in re.split(r"(?<=[，,；;：:。！？!?])", cleaned)
+            if piece.strip()
+        ]
+        fragments: list[str] = []
+        pending = ""
+        for piece in pieces:
+            piece = piece.strip()
+            if pending and len(pending) + len(piece) > 36:
+                fragments.append(pending)
+                pending = piece
+            else:
+                pending += piece
+        if pending:
+            fragments.append(pending)
+        if len(fragments) == 1 and len(fragments[0]) > 48:
+            only = fragments[0]
+            fragments = [
+                only[offset : offset + 32] for offset in range(0, len(only), 32)
+            ]
+        return fragments[:6] if fragments else [cleaned]
 
     def generate_audio(self, text, file_name_no_ext=None):
         from ..companion_diagnostics import timer
@@ -76,15 +122,15 @@ class TTSEngine(TTSInterface):
 
         # Send POST request to the TTS API
         with timer("voice_synthesis") as timing:
-            response = requests.get(
-                self.api_url, params=data, timeout=120, stream=True
-            )
+            response = requests.get(self.api_url, params=data, timeout=120, stream=True)
             if response.status_code == 200:
                 with open(file_name, "wb") as audio_file:
                     for chunk in response.iter_content(chunk_size=32 * 1024):
                         if chunk:
                             audio_file.write(chunk)
-                temp_cache = cache_path.with_suffix(cache_path.suffix + ".tmp")
+                temp_cache = cache_path.with_name(
+                    f".{cache_path.name}.{uuid.uuid4().hex}.tmp"
+                )
                 shutil.copyfile(file_name, temp_cache)
                 os.replace(temp_cache, cache_path)
                 return file_name

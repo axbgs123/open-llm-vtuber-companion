@@ -104,7 +104,9 @@ The integration wraps the official
 Reference audio and voice profiles are stored per character. Only clone a voice
 you own or have explicit permission to use.
 
-- GPT-SoVITS streaming mode is enabled for earlier first-sentence delivery.
+- Long GPT-SoVITS lines are split into independently playable phrase fragments.
+  The first fragment enters the existing frontend audio queue while later
+  fragments continue generating, so playback no longer waits for the whole line.
 - Synthesized phrases are cached locally by text and voice identity. Cache files
   are excluded from backups and can be cleared from the console.
 

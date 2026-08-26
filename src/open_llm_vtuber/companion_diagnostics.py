@@ -5,16 +5,20 @@ from __future__ import annotations
 import json
 import os
 import resource
+import threading
 import time
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from loguru import logger
+
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "companion_data"
 PATH = DATA_DIR / "diagnostics.json"
 MAX_EVENTS = 300
+_lock = threading.RLock()
 
 
 def _load() -> dict[str, Any]:
@@ -28,24 +32,33 @@ def _load() -> dict[str, Any]:
 def _save(data: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp = PATH.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     os.replace(temp, PATH)
 
 
-def record(kind: str, duration_ms: float, *, ok: bool = True, cached: bool = False) -> None:
-    data = _load()
-    events = data.setdefault("events", [])
-    events.append(
-        {
-            "kind": str(kind)[:50],
-            "duration_ms": round(max(0.0, float(duration_ms)), 1),
-            "ok": bool(ok),
-            "cached": bool(cached),
-            "at": time.time(),
-        }
-    )
-    data["events"] = events[-MAX_EVENTS:]
-    _save(data)
+def record(
+    kind: str, duration_ms: float, *, ok: bool = True, cached: bool = False
+) -> None:
+    try:
+        with _lock:
+            data = _load()
+            events = data.setdefault("events", [])
+            events.append(
+                {
+                    "kind": str(kind)[:50],
+                    "duration_ms": round(max(0.0, float(duration_ms)), 1),
+                    "ok": bool(ok),
+                    "cached": bool(cached),
+                    "at": time.time(),
+                }
+            )
+            data["events"] = events[-MAX_EVENTS:]
+            _save(data)
+    except Exception as exc:
+        # Observability must never break a successful conversation or TTS task.
+        logger.warning(f"[diagnostics] event dropped: {exc}")
 
 
 @contextmanager
@@ -62,7 +75,8 @@ def timer(kind: str) -> Iterator[dict[str, Any]]:
 
 
 def summary() -> dict[str, Any]:
-    events = _load().get("events", [])
+    with _lock:
+        events = _load().get("events", [])
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in events:
         grouped[str(event.get("kind", "other"))].append(event)
@@ -87,4 +101,5 @@ def summary() -> dict[str, Any]:
 
 
 def clear() -> None:
-    _save({"events": []})
+    with _lock:
+        _save({"events": []})

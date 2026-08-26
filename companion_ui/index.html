@@ -72,7 +72,7 @@
     <form id="voiceForm" class="grid" style="margin-top:16px" onsubmit="uploadVoice(event)"><div><label>声音档案名称</label><input name="name" required placeholder="例如：温柔女声" /></div><div><label>参考音频</label><input name="audio" type="file" accept="audio/*" required /></div>
       <div class="wide"><label>参考音频原文</label><input name="prompt_text" required placeholder="必须与录音内容一致" /></div><div><label>参考音频语言</label><select name="prompt_lang"><option value="zh">中文</option><option value="en">英文</option><option value="ja">日文</option><option value="ko">韩文</option></select></div><div><label>输出语言</label><select name="text_lang"><option value="zh">中文</option><option value="en">英文</option><option value="ja">日文</option><option value="ko">韩文</option></select></div>
       <div class="wide"><label>GPT-SoVITS API</label><input name="api_url" value="http://127.0.0.1:9880/tts" /></div><div class="wide"><button class="primary" type="submit">保存声音档案</button></div></form>
-  </div><div class="card"><h2>该角色的声音档案</h2><div id="voiceList" class="muted">暂无</div><p class="muted">启用声音后需要重启 Open-LLM-VTuber。重复句会命中本地语音缓存，流式模式会优先返回首句。</p><button onclick="clearVoiceCache()">清理语音缓存</button></div></section>
+  </div><div class="card"><h2>该角色的声音档案</h2><div id="voiceList" class="muted">暂无</div><p class="muted">启用声音后需要重启 Open-LLM-VTuber。重复短语会命中本地缓存；长句会分段播放，首段生成后即可开口。</p><button onclick="clearVoiceCache()">清理语音缓存</button></div></section>
 
   <section id="runtime" class="panel"><div class="card"><h2>按需加载与自动释放</h2><p class="muted">对话模型在空闲后只卸载权重，Ollama 服务仍可快速再次加载；声音模型仅在试听或角色使用时启动。</p>
     <div class="grid"><div><label>对话模型空闲卸载（秒）</label><input id="llmUnloadSeconds" type="number" min="60" /></div><div><label>声音模型空闲卸载（秒）</label><input id="voiceUnloadSeconds" type="number" min="60" /></div>
