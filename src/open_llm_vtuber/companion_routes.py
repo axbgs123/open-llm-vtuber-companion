@@ -384,7 +384,44 @@ def init_companion_routes() -> APIRouter:
     async def backups(request: Request):
         if forbidden := _local_only(request):
             return forbidden
-        return {"ok": True, "backups": backup_manager.list_backups()}
+        return {
+            "ok": True,
+            "backups": backup_manager.list_backups(),
+            "retention": backup_manager.get_retention(),
+        }
+
+    @router.get("/api/companion/backups/{filename}/preview")
+    async def preview_backup(filename: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        if Path(filename).name != filename or not filename.endswith(".aicbackup"):
+            return JSONResponse({"ok": False, "error": "invalid filename"}, status_code=400)
+        try:
+            return {"ok": True, **backup_manager.preview_backup(filename)}
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    @router.post("/api/companion/backups/recovery-key/import")
+    async def import_backup_key(request: Request, key_file: UploadFile = File(...)):
+        if forbidden := _local_only(request):
+            return forbidden
+        try:
+            result = backup_manager.import_recovery_key(await key_file.read())
+            return {"ok": True, **result}
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    @router.put("/api/companion/backups/retention")
+    async def update_backup_retention(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {"ok": True, "retention": backup_manager.save_retention(await request.json())}
+
+    @router.post("/api/companion/backups/prune")
+    async def prune_backups(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {"ok": True, **backup_manager.prune_backups()}
 
     @router.get("/api/companion/system/version")
     async def system_version(request: Request):

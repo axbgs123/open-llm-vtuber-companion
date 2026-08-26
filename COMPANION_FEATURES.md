@@ -82,6 +82,12 @@ configuration system. Removing a character archives its YAML under
 - Restore itself creates a pre-restore snapshot.
 - Export `companion-backup-recovery.key` separately from the encrypted archives;
   it is required to decrypt backups after moving to another machine.
+- Recovery preview lists files that will be created, overwritten, or removed
+  before restore is allowed.
+- Recovery keys from another installation can be imported into a local keyring;
+  importing never replaces the current machine key.
+- Configurable retention keeps the newest snapshots and safety snapshots while
+  preserving every full backup required by a retained incremental chain.
 
 ### Versioned data and upstream updates
 

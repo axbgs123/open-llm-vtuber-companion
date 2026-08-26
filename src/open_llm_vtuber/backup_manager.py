@@ -22,8 +22,11 @@ ROOT = Path(__file__).resolve().parents[2]
 BACKUP_DIR = ROOT / "backups"
 INDEX_PATH = BACKUP_DIR / "index.json"
 KEY_PATH = ROOT / "companion_data" / ".backup.key"
+KEYRING_DIR = ROOT / "companion_data" / "backup_keys"
+RETENTION_PATH = BACKUP_DIR / "retention.json"
 MAGIC = b"AICB1\n"
 BACKUP_SCHEMA = 1
+DEFAULT_RETENTION = {"max_backups": 30, "keep_safety": 10}
 
 _daily_task: asyncio.Task | None = None
 
@@ -72,7 +75,7 @@ def _allowed_file(path: Path) -> bool:
     relative = path.relative_to(ROOT)
     parts = relative.parts
     if any(
-        part in {".git", ".venv", "models", "logs", "cache", "backups"}
+        part in {".git", ".venv", "models", "logs", "cache", "backups", "backup_keys"}
         for part in parts
     ):
         return False
@@ -156,10 +159,31 @@ def _read_encrypted(path: Path) -> bytes:
     raw = path.read_bytes()
     if not raw.startswith(MAGIC):
         raise ValueError("not a companion backup")
+    keys = [_key()]
+    if KEYRING_DIR.is_dir():
+        keys.extend(path.read_bytes().strip() for path in KEYRING_DIR.glob("*.key"))
+    for key in keys:
+        try:
+            return Fernet(key).decrypt(raw[len(MAGIC) :])
+        except (InvalidToken, ValueError):
+            continue
+    raise ValueError("backup key does not match any imported recovery key")
+
+
+def import_recovery_key(raw: bytes) -> dict[str, str]:
+    key = raw.strip()
     try:
-        return Fernet(_key()).decrypt(raw[len(MAGIC) :])
-    except InvalidToken as exc:
-        raise ValueError("backup key does not match this machine") from exc
+        Fernet(key)
+    except Exception as exc:
+        raise ValueError("invalid recovery key") from exc
+    fingerprint = hashlib.sha256(key).hexdigest()[:12]
+    if key == _key():
+        return {"fingerprint": fingerprint, "status": "current"}
+    KEYRING_DIR.mkdir(parents=True, exist_ok=True)
+    path = KEYRING_DIR / f"{fingerprint}.key"
+    path.write_bytes(key + b"\n")
+    os.chmod(path, 0o600)
+    return {"fingerprint": fingerprint, "status": "imported"}
 
 
 def _backup_manifest(path: Path) -> dict[str, Any]:
@@ -238,6 +262,8 @@ def create_backup(
         index["last_global"] = filename
         index["last_hashes"] = hashes
     _save_index(index)
+    if reason == "automatic":
+        prune_backups()
     logger.info(f"[backup] created {filename} ({record['size']} bytes)")
     return record
 
@@ -252,6 +278,94 @@ def list_backups() -> list[dict[str, Any]]:
             current["size"] = path.stat().st_size
             existing.append(current)
     return sorted(existing, key=lambda item: item.get("created_at", ""), reverse=True)
+
+
+def preview_backup(filename: str) -> dict[str, Any]:
+    chain = _chain(Path(filename).name)
+    final = chain[-1][0]
+    effective: set[str] = set()
+    deleted: set[str] = set()
+    try:
+        for manifest, archive in chain:
+            deleted.update(str(item) for item in manifest.get("deleted", []))
+            for name in archive.namelist():
+                if name in {"manifest.json", "__character_state__.json"} or name.endswith("/"):
+                    continue
+                target = (ROOT / name).resolve()
+                if not is_within(str(ROOT), str(target)):
+                    raise ValueError("backup contains unsafe path")
+                effective.add(name)
+                deleted.discard(name)
+        created = sorted(name for name in effective if not (ROOT / name).is_file())
+        overwritten = sorted(name for name in effective if (ROOT / name).is_file())
+        removed = sorted(name for name in deleted if (ROOT / name).is_file())
+        return {
+            "filename": Path(filename).name,
+            "scope": final.get("scope"),
+            "conf_uid": final.get("conf_uid", ""),
+            "created_at": final.get("created_at", ""),
+            "chain": [
+                *[str(manifest.get("base")) for manifest, _ in chain if manifest.get("base")],
+                Path(filename).name,
+            ],
+            "created": created,
+            "overwritten": overwritten,
+            "deleted": removed,
+            "counts": {"created": len(created), "overwritten": len(overwritten), "deleted": len(removed)},
+        }
+    finally:
+        for _, archive in chain:
+            archive.close()
+
+
+def get_retention() -> dict[str, int]:
+    settings = dict(DEFAULT_RETENTION)
+    try:
+        loaded = json.loads(RETENTION_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            settings.update({key: loaded[key] for key in settings if key in loaded})
+    except Exception:
+        pass
+    settings["max_backups"] = max(5, min(200, int(settings["max_backups"])))
+    settings["keep_safety"] = max(1, min(50, int(settings["keep_safety"])))
+    return settings
+
+
+def save_retention(incoming: dict[str, Any]) -> dict[str, int]:
+    settings = get_retention()
+    settings.update({key: incoming[key] for key in settings if key in incoming})
+    settings["max_backups"] = max(5, min(200, int(settings["max_backups"])))
+    settings["keep_safety"] = max(1, min(50, int(settings["keep_safety"])))
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    temp = RETENTION_PATH.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, RETENTION_PATH)
+    return settings
+
+
+def prune_backups() -> dict[str, Any]:
+    settings = get_retention()
+    records = list_backups()
+    safety = [row for row in records if row.get("reason") not in {"manual", "automatic", "test"}]
+    keep_names = {row["filename"] for row in records[: settings["max_backups"]]}
+    keep_names.update(row["filename"] for row in safety[: settings["keep_safety"]])
+    by_name = {row["filename"]: row for row in records}
+    pending = list(keep_names)
+    while pending:
+        name = pending.pop()
+        base = str(by_name.get(name, {}).get("base") or "")
+        if base and base not in keep_names:
+            keep_names.add(base)
+            pending.append(base)
+    removed = []
+    for row in records:
+        if row["filename"] not in keep_names:
+            (BACKUP_DIR / row["filename"]).unlink(missing_ok=True)
+            removed.append(row["filename"])
+    index = _index()
+    index["backups"] = [row for row in index.get("backups", []) if row.get("filename") in keep_names]
+    _save_index(index)
+    return {"removed": removed, "kept": len(keep_names)}
 
 
 def _chain(

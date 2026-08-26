@@ -167,6 +167,10 @@ class CompanionFeatureTests(unittest.TestCase):
             patch.object(
                 backup_manager, "KEY_PATH", root / "companion_data" / ".backup.key"
             ),
+            patch.object(
+                backup_manager, "KEYRING_DIR", root / "companion_data" / "backup_keys"
+            ),
+            patch.object(backup_manager, "RETENTION_PATH", backup_dir / "retention.json"),
         ):
             full = backup_manager.create_backup(scope="global", reason="test")
             encrypted = (backup_dir / full["filename"]).read_bytes()
@@ -178,11 +182,45 @@ class CompanionFeatureTests(unittest.TestCase):
             )
             self.assertEqual(incremental["mode"], "incremental")
             (root / "conf.yaml").write_text("broken\n", encoding="utf-8")
+            preview = backup_manager.preview_backup(incremental["filename"])
+            self.assertEqual(preview["counts"]["overwritten"], 1)
+            self.assertEqual(len(preview["chain"]), 2)
             backup_manager.restore_backup(incremental["filename"])
             self.assertEqual(
                 (root / "conf.yaml").read_text(encoding="utf-8"), "value: two\n"
             )
             self.assertEqual(len(backup_manager.list_backups()), 3)
+
+    def test_backup_keyring_and_retention(self):
+        root = self.root / "vault"
+        root.mkdir()
+        (root / "conf.yaml").write_text("value: one\n", encoding="utf-8")
+        for folder in ("characters", "chat_history", "companion_data"):
+            (root / folder).mkdir()
+        backup_dir = root / "backups"
+        with (
+            patch.object(backup_manager, "ROOT", root),
+            patch.object(backup_manager, "BACKUP_DIR", backup_dir),
+            patch.object(backup_manager, "INDEX_PATH", backup_dir / "index.json"),
+            patch.object(backup_manager, "KEY_PATH", root / "companion_data" / ".backup.key"),
+            patch.object(backup_manager, "KEYRING_DIR", root / "companion_data" / "backup_keys"),
+            patch.object(backup_manager, "RETENTION_PATH", backup_dir / "retention.json"),
+        ):
+            old_key = backup_manager.Fernet.generate_key()
+            backup_manager.KEY_PATH.write_bytes(old_key + b"\n")
+            foreign = backup_manager.create_backup(scope="global", reason="test")
+            backup_manager.KEY_PATH.write_bytes(backup_manager.Fernet.generate_key() + b"\n")
+            imported = backup_manager.import_recovery_key(old_key)
+            self.assertEqual(imported["status"], "imported")
+            self.assertEqual(len(list(backup_manager.KEYRING_DIR.glob("*.key"))), 1)
+            self.assertEqual(backup_manager.preview_backup(foreign["filename"])["scope"], "global")
+            for index in range(7):
+                (root / "conf.yaml").write_text(f"value: {index}\n", encoding="utf-8")
+                backup_manager.create_backup(scope="global", reason="test")
+            backup_manager.save_retention({"max_backups": 5, "keep_safety": 1})
+            result = backup_manager.prune_backups()
+            self.assertEqual(len(result["removed"]), 3)
+            self.assertEqual(len(backup_manager.list_backups()), 5)
 
     def test_data_migration_adds_memory_metadata(self):
         root = self.root / "migration"
