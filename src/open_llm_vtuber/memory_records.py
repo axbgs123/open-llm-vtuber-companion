@@ -47,7 +47,17 @@ def load_records(conf_uid: str) -> list[dict[str, Any]]:
                 if fact:
                     key = "legacy:" + hashlib.sha256(fact.encode()).hexdigest()[:12]
                     records.append(
-                        _new_record(key, fact, fact, "迁移", source, confidence=0.7)
+                        _new_record(
+                            key,
+                            fact,
+                            fact,
+                            "迁移",
+                            source,
+                            status="pending_confirmation",
+                            confidence=0.7,
+                            importance=2,
+                            needs_confirmation=True,
+                        )
                     )
             if records:
                 save_records(conf_uid, records)
@@ -74,7 +84,13 @@ def _clean_value(value: str) -> str:
     return re.split(r"[。！？，,;；\n]", value.strip())[0].strip(" 的了呢吧呀")[:80]
 
 
-def extract_claims(user_input: str) -> list[dict[str, str]]:
+def _expiry(days: int) -> str:
+    return (dt.datetime.now().astimezone() + dt.timedelta(days=days)).isoformat(
+        timespec="seconds"
+    )
+
+
+def extract_claims(user_input: str) -> list[dict[str, Any]]:
     """Extract high-confidence user claims that have stable conflict keys."""
     text = re.sub(r"\s+", " ", user_input or "").strip()
     patterns = [
@@ -82,17 +98,35 @@ def extract_claims(user_input: str) -> list[dict[str, str]]:
             r"(?:请|以後|以后)?叫我(?P<v>[\w\u3400-\u9fff·]{1,20})",
             "identity.preferred_name",
             "称呼",
+            5,
         ),
-        (r"我叫(?P<v>[\w\u3400-\u9fff·]{1,20})", "identity.name", "身份"),
-        (r"我(?:现在|目前)?住在(?P<v>[^，。！？]{1,40})", "identity.location", "身份"),
+        (
+            r"我叫(?P<v>[\w\u3400-\u9fff·]{1,20})",
+            "identity.name",
+            "身份",
+            5,
+        ),
+        (
+            r"我(?:现在|目前)?住在(?P<v>[^，。！？]{1,40})",
+            "identity.location",
+            "身份",
+            4,
+        ),
         (
             r"我(?:的职业是|的職業是|是做)(?P<v>[^，。！？]{1,40})",
             "identity.occupation",
             "身份",
+            4,
+        ),
+        (
+            r"我(?:的)?生日(?:是|在)(?P<v>[^，。！？]{1,30})",
+            "identity.birthday",
+            "重要日期",
+            5,
         ),
     ]
-    claims: list[dict[str, str]] = []
-    for pattern, key, category in patterns:
+    claims: list[dict[str, Any]] = []
+    for pattern, key, category, importance in patterns:
         match = re.search(pattern, text)
         if match:
             value = _clean_value(match.group("v"))
@@ -103,6 +137,9 @@ def extract_claims(user_input: str) -> list[dict[str, str]]:
                         "value": value,
                         "category": category,
                         "fact": match.group(0),
+                        "importance": importance,
+                        "confidence": 0.95,
+                        "expires_at": "",
                     }
                 )
 
@@ -120,9 +157,84 @@ def extract_claims(user_input: str) -> list[dict[str, str]]:
                         "value": stance,
                         "category": "偏好",
                         "fact": f"用户{stance}{target}",
+                        "importance": 3,
+                        "confidence": 0.9,
+                        "expires_at": "",
                     }
                 )
-    unique: dict[str, dict[str, str]] = {}
+
+    family_pattern = r"我(?:有一个|有一個|有个|有個)?(?P<r>爸爸|妈妈|媽媽|哥哥|姐姐|弟弟|妹妹|丈夫|妻子|男朋友|女朋友)(?:叫(?P<n>[\w\u3400-\u9fff·]{1,20}))?"
+    for match in re.finditer(family_pattern, text):
+        relation = match.group("r")
+        name = match.group("n") or relation
+        claims.append(
+            {
+                "key": f"family:{relation}",
+                "value": name,
+                "category": "家庭",
+                "fact": match.group(0),
+                "importance": 4,
+                "confidence": 0.9,
+                "expires_at": "",
+            }
+        )
+
+    project_match = re.search(
+        r"我(?:最近|目前|正在)?(?:在)?(?:做|开发|開發|写|寫)(?P<v>[^，。！？]{2,60})",
+        text,
+    )
+    if project_match:
+        project = _clean_value(project_match.group("v"))
+        claims.append(
+            {
+                "key": "project:current",
+                "value": project,
+                "category": "项目",
+                "fact": f"用户正在做{project}",
+                "importance": 4,
+                "confidence": 0.85,
+                "expires_at": _expiry(90),
+            }
+        )
+
+    habit_match = re.search(
+        r"我(?P<freq>每天|每周|每週|每星期|每月)(?P<v>[^，。！？]{2,50})",
+        text,
+    )
+    if habit_match:
+        value = _clean_value(habit_match.group("freq") + habit_match.group("v"))
+        claims.append(
+            {
+                "key": "habit:" + hashlib.sha256(value.encode()).hexdigest()[:10],
+                "value": value,
+                "category": "习惯",
+                "fact": f"用户{value}",
+                "importance": 3,
+                "confidence": 0.85,
+                "expires_at": "",
+            }
+        )
+
+    plan_match = re.search(
+        r"(?P<t>今天|明天|后天|後天|这周|這週|本周|本週|下周|下週)(?:我)?(?:要|准备|準備|打算)(?P<v>[^，。！？]{2,60})",
+        text,
+    )
+    if plan_match:
+        plan = plan_match.group("t") + plan_match.group("v")
+        days = 2 if plan_match.group("t") in {"今天", "明天", "后天", "後天"} else 14
+        claims.append(
+            {
+                "key": "plan:" + hashlib.sha256(plan.encode()).hexdigest()[:10],
+                "value": plan,
+                "category": "近期计划",
+                "fact": f"用户计划{plan}",
+                "importance": 3,
+                "confidence": 0.9,
+                "expires_at": _expiry(days),
+            }
+        )
+
+    unique: dict[str, dict[str, Any]] = {}
     for claim in claims:
         unique[claim["key"]] = claim
     return list(unique.values())
@@ -149,6 +261,9 @@ def _new_record(
     status: str = "active",
     conflict_with: str = "",
     confidence: float = 0.9,
+    importance: int = 3,
+    expires_at: str = "",
+    needs_confirmation: bool = False,
 ) -> dict[str, Any]:
     created = _now()
     return {
@@ -159,11 +274,46 @@ def _new_record(
         "category": category,
         "status": status,
         "confidence": confidence,
+        "importance": max(1, min(5, int(importance))),
+        "expires_at": expires_at,
+        "needs_confirmation": needs_confirmation,
+        "last_confirmed_at": created if not needs_confirmation else "",
         "conflict_with": conflict_with,
         "created_at": created,
         "updated_at": created,
         "sources": [source],
     }
+
+
+def _fact_tokens(text: str) -> set[str]:
+    normalized = re.sub(r"[^\w\u3400-\u9fff]", "", text.lower())
+    return {normalized[i : i + 2] for i in range(max(0, len(normalized) - 1))}
+
+
+def _near_duplicate(records: list[dict[str, Any]], fact: str) -> dict[str, Any] | None:
+    target = _fact_tokens(fact)
+    if not target:
+        return None
+    for record in records:
+        if record.get("status") not in {"active", "pending_confirmation"}:
+            continue
+        existing = _fact_tokens(str(record.get("fact", "")))
+        if existing and len(target & existing) / len(target | existing) >= 0.82:
+            return record
+    return None
+
+
+def _is_expired(record: dict[str, Any]) -> bool:
+    expires_at = str(record.get("expires_at") or "")
+    if not expires_at:
+        return False
+    try:
+        expiry = dt.datetime.fromisoformat(expires_at)
+        if expiry.tzinfo is None:
+            expiry = expiry.astimezone()
+        return expiry <= dt.datetime.now().astimezone()
+    except Exception:
+        return False
 
 
 def update_from_turn(
@@ -211,6 +361,9 @@ def update_from_turn(
                 source,
                 status="pending_conflict" if conflict else "active",
                 conflict_with=str(conflict.get("id", "")) if conflict else "",
+                confidence=float(claim.get("confidence", 0.9)),
+                importance=int(claim.get("importance", 3)),
+                expires_at=str(claim.get("expires_at", "")),
             )
         )
 
@@ -226,8 +379,25 @@ def update_from_turn(
             continue
         if any(value and value in fact for value in structured_values):
             continue
+        duplicate = _near_duplicate(records, fact)
+        if duplicate:
+            duplicate.setdefault("sources", []).append(source)
+            duplicate["updated_at"] = _now()
+            continue
         key = "note:" + hashlib.sha256(fact.encode()).hexdigest()[:12]
-        records.append(_new_record(key, fact, fact, "其他", source, confidence=0.7))
+        records.append(
+            _new_record(
+                key,
+                fact,
+                fact,
+                "其他",
+                source,
+                status="pending_confirmation",
+                confidence=0.7,
+                importance=2,
+                needs_confirmation=True,
+            )
+        )
         known_facts.add(fact)
 
     save_records(conf_uid, records)
@@ -235,10 +405,23 @@ def update_from_turn(
 
 
 def active_memory_text(conf_uid: str, cap: int = 1500) -> str:
-    active = [
-        record for record in load_records(conf_uid) if record.get("status") == "active"
-    ]
-    active.sort(key=lambda item: (item.get("category", ""), item.get("updated_at", "")))
+    records = load_records(conf_uid)
+    changed = False
+    for record in records:
+        if record.get("status") == "active" and _is_expired(record):
+            record["status"] = "expired"
+            record["updated_at"] = _now()
+            changed = True
+    if changed:
+        save_records(conf_uid, records)
+    active = [record for record in records if record.get("status") == "active"]
+    active.sort(
+        key=lambda item: (
+            -int(item.get("importance", 3)),
+            item.get("category", ""),
+            item.get("updated_at", ""),
+        )
+    )
     lines: list[str] = []
     length = 0
     for record in active:
@@ -262,9 +445,48 @@ def resolve_conflict(conf_uid: str, winner_id: str) -> list[dict[str, Any]]:
         if record.get("id") == winner_id:
             record["status"] = "active"
             record["conflict_with"] = ""
+            record["needs_confirmation"] = False
+            record["last_confirmed_at"] = _now()
         elif record.get("status") in {"active", "pending_conflict"}:
             record["status"] = "superseded"
         record["updated_at"] = _now()
+    save_records(conf_uid, records)
+    return records
+
+
+def confirm_record(
+    conf_uid: str, record_id: str, accept: bool = True
+) -> list[dict[str, Any]]:
+    records = load_records(conf_uid)
+    record = next((item for item in records if item.get("id") == record_id), None)
+    if not record:
+        raise ValueError("memory record not found")
+    record["status"] = "active" if accept else "rejected"
+    record["needs_confirmation"] = False
+    record["last_confirmed_at"] = _now() if accept else ""
+    record["updated_at"] = _now()
+    save_records(conf_uid, records)
+    return records
+
+
+def update_record(
+    conf_uid: str,
+    record_id: str,
+    *,
+    importance: int | None = None,
+    expires_at: str | None = None,
+) -> list[dict[str, Any]]:
+    records = load_records(conf_uid)
+    record = next((item for item in records if item.get("id") == record_id), None)
+    if not record:
+        raise ValueError("memory record not found")
+    if importance is not None:
+        record["importance"] = max(1, min(5, int(importance)))
+    if expires_at is not None:
+        if expires_at:
+            dt.datetime.fromisoformat(expires_at)
+        record["expires_at"] = expires_at
+    record["updated_at"] = _now()
     save_records(conf_uid, records)
     return records
 
@@ -286,7 +508,11 @@ def replace_manual_memory(conf_uid: str, content: str) -> list[dict[str, Any]]:
 def forget_active_records(conf_uid: str) -> list[dict[str, Any]]:
     records = load_records(conf_uid)
     for record in records:
-        if record.get("status") in {"active", "pending_conflict"}:
+        if record.get("status") in {
+            "active",
+            "pending_conflict",
+            "pending_confirmation",
+        }:
             record["status"] = "forgotten"
             record["updated_at"] = _now()
     save_records(conf_uid, records)

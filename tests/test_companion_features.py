@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import datetime as dt
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,9 @@ from src.open_llm_vtuber import (
     memory_semantic,
     proactive_manager,
     runtime_manager,
+    backup_manager,
+    data_migrations,
+    environment_awareness,
 )
 
 
@@ -143,6 +147,102 @@ class CompanionFeatureTests(unittest.TestCase):
             )
             self.assertEqual(settings["llm_idle_unload_seconds"], 60)
             self.assertEqual(settings["voice_idle_unload_seconds"], 86400)
+
+    def test_encrypted_incremental_backup_and_restore(self):
+        root = self.root / "app"
+        root.mkdir()
+        (root / "conf.yaml").write_text("value: one\n", encoding="utf-8")
+        (root / "characters").mkdir()
+        (root / "chat_history").mkdir()
+        (root / "companion_data").mkdir()
+        backup_dir = root / "backups"
+        with (
+            patch.object(backup_manager, "ROOT", root),
+            patch.object(backup_manager, "BACKUP_DIR", backup_dir),
+            patch.object(backup_manager, "INDEX_PATH", backup_dir / "index.json"),
+            patch.object(
+                backup_manager, "KEY_PATH", root / "companion_data" / ".backup.key"
+            ),
+        ):
+            full = backup_manager.create_backup(scope="global", reason="test")
+            encrypted = (backup_dir / full["filename"]).read_bytes()
+            self.assertTrue(encrypted.startswith(backup_manager.MAGIC))
+            self.assertNotIn(b"value: one", encrypted)
+            (root / "conf.yaml").write_text("value: two\n", encoding="utf-8")
+            incremental = backup_manager.create_backup(
+                scope="global", incremental=True, reason="test"
+            )
+            self.assertEqual(incremental["mode"], "incremental")
+            (root / "conf.yaml").write_text("broken\n", encoding="utf-8")
+            backup_manager.restore_backup(incremental["filename"])
+            self.assertEqual(
+                (root / "conf.yaml").read_text(encoding="utf-8"), "value: two\n"
+            )
+            self.assertEqual(len(backup_manager.list_backups()), 3)
+
+    def test_data_migration_adds_memory_metadata(self):
+        root = self.root / "migration"
+        data = root / "companion_data"
+        records_dir = root / "chat_history" / "role"
+        records_dir.mkdir(parents=True)
+        record_path = records_dir / "memory_records.json"
+        record_path.write_text(
+            json.dumps([{"id": "1", "status": "active", "confidence": 0.5}]),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(data_migrations, "ROOT", root),
+            patch.object(data_migrations, "DATA_DIR", data),
+            patch.object(data_migrations, "SCHEMA_PATH", data / "schema.json"),
+        ):
+            result = data_migrations.run_migrations()
+            migrated = json.loads(record_path.read_text(encoding="utf-8"))[0]
+            self.assertEqual(result["to"], data_migrations.CURRENT_SCHEMA)
+            self.assertEqual(migrated["status"], "pending_confirmation")
+            self.assertEqual(migrated["importance"], 3)
+
+    def test_richer_claims_and_expiration(self):
+        claims = memory_records.extract_claims(
+            "我生日是5月2日，我有个姐姐叫小雨。我正在开发一个日记应用，明天要去医院。"
+        )
+        categories = {claim["category"] for claim in claims}
+        self.assertTrue({"重要日期", "家庭", "项目", "近期计划"}.issubset(categories))
+        expired = {
+            "status": "active",
+            "expires_at": (
+                dt.datetime.now().astimezone() - dt.timedelta(days=1)
+            ).isoformat(),
+        }
+        self.assertTrue(memory_records._is_expired(expired))
+
+    def test_environment_policy_blocks_meeting_and_away(self):
+        fake = {
+            "frontmost_app": "zoom.us",
+            "idle_seconds": 1200,
+            "screen_locked": False,
+            "on_console": True,
+            "full_screen": False,
+            "focus_mode": False,
+            "meeting_apps": ["zoom.us"],
+            "microphone_likely_in_use": True,
+        }
+        settings = {
+            "environment": {
+                "block_meeting_apps": True,
+                "block_full_screen": True,
+                "block_focus_mode": True,
+                "block_when_locked": True,
+                "block_when_away": True,
+                "block_microphone": True,
+                "away_after_seconds": 900,
+                "blocked_apps": ["zoom.us"],
+            }
+        }
+        with patch.object(environment_awareness, "signals", return_value=fake):
+            result = environment_awareness.evaluate(settings)
+        self.assertFalse(result["allowed"])
+        self.assertIn("meeting_app", result["reasons"])
+        self.assertIn("user_away", result["reasons"])
 
 
 if __name__ == "__main__":

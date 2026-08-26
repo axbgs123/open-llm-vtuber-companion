@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from loguru import logger
 from ruamel.yaml import YAML
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from . import memory_fts
 from . import memory_records
@@ -29,6 +29,10 @@ from .memory_core import (
 )
 from . import runtime_manager
 from . import proactive_manager
+from . import backup_manager
+from . import data_migrations
+from . import upstream_manager
+from . import environment_awareness
 
 ROOT = Path.cwd().resolve()
 CHARACTERS_DIR = ROOT / "characters"
@@ -46,6 +50,16 @@ DEFAULT_PROACTIVE = {
     "daily_limit": 6,
     "recent_topic_window": 4,
     "quiet_hours": {"enabled": True, "start": "23:00", "end": "08:00"},
+    "environment": {
+        "block_meeting_apps": True,
+        "block_full_screen": True,
+        "block_focus_mode": True,
+        "block_when_locked": True,
+        "block_when_away": True,
+        "block_microphone": True,
+        "away_after_seconds": 900,
+        "blocked_apps": environment_awareness.DEFAULT_BLOCKED_APPS,
+    },
 }
 
 _yaml = YAML()
@@ -191,6 +205,10 @@ def get_proactive_settings() -> dict[str, Any]:
     if isinstance(settings.get("quiet_hours"), dict):
         quiet.update(settings["quiet_hours"])
     settings["quiet_hours"] = quiet
+    environment = dict(DEFAULT_PROACTIVE["environment"])
+    if isinstance(settings.get("environment"), dict):
+        environment.update(settings["environment"])
+    settings["environment"] = environment
     settings["idle_seconds"] = max(15, min(86400, int(settings["idle_seconds"])))
     settings["cooldown_seconds"] = max(
         settings["idle_seconds"], min(86400, int(settings["cooldown_seconds"]))
@@ -285,6 +303,91 @@ def init_companion_routes() -> APIRouter:
             "runtime": await runtime_manager.status(),
         }
 
+    @router.get("/api/companion/backups")
+    async def backups(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {"ok": True, "backups": backup_manager.list_backups()}
+
+    @router.get("/api/companion/system/version")
+    async def system_version(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {
+            "ok": True,
+            "schema": data_migrations.status(),
+            "upstream": upstream_manager.status(fetch=False),
+        }
+
+    @router.post("/api/companion/system/migrate")
+    async def migrate_system(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        return {"ok": True, "migration": data_migrations.run_migrations()}
+
+    @router.post("/api/companion/system/upstream-check")
+    async def upstream_check(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        result = await __import__("asyncio").to_thread(
+            upstream_manager.status, fetch=True
+        )
+        return result
+
+    @router.post("/api/companion/backups")
+    async def create_backup(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        try:
+            record = await __import__("asyncio").to_thread(
+                backup_manager.create_backup,
+                scope=str(body.get("scope") or "global"),
+                conf_uid=str(body.get("conf_uid") or ""),
+                incremental=bool(body.get("incremental", False)),
+                reason="manual",
+            )
+            return {"ok": True, "backup": record}
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    @router.post("/api/companion/backups/{filename}/restore")
+    async def restore_backup(filename: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        if Path(filename).name != filename or not filename.endswith(".aicbackup"):
+            return JSONResponse(
+                {"ok": False, "error": "invalid filename"}, status_code=400
+            )
+        try:
+            return await __import__("asyncio").to_thread(
+                backup_manager.restore_backup, filename
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    @router.get("/api/companion/backups/recovery-key/download")
+    async def download_backup_key(request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        backup_manager._key()
+        return FileResponse(
+            backup_manager.KEY_PATH,
+            filename="companion-backup-recovery.key",
+            media_type="application/octet-stream",
+        )
+
+    @router.get("/api/companion/backups/{filename}/download")
+    async def download_backup(filename: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        path = backup_manager.BACKUP_DIR / Path(filename).name
+        if Path(filename).name != filename or not path.is_file():
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        return FileResponse(
+            path, filename=path.name, media_type="application/octet-stream"
+        )
+
     @router.get("/api/companion/runtime")
     async def runtime_status(request: Request):
         if forbidden := _local_only(request):
@@ -378,9 +481,20 @@ def init_companion_routes() -> APIRouter:
         path = _safe_character_file(filename)
         if not path.is_file():
             return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        try:
+            char_data = read_yaml(str(path)).get("character_config", {})
+            backup_manager.create_safety_snapshot(
+                str(char_data.get("conf_uid") or path.stem),
+                "before_character_archive",
+            )
+        except Exception:
+            pass
         body = await request.json()
         data = _read_roundtrip(path)
         char = data.setdefault("character_config", {})
+        backup_manager.create_safety_snapshot(
+            str(char.get("conf_uid") or path.stem), "before_character_edit"
+        )
         for key in (
             "conf_name",
             "character_name",
@@ -438,6 +552,7 @@ def init_companion_routes() -> APIRouter:
         state["memory"][conf_uid] = settings
         _save_state(state)
         if "content" in body:
+            backup_manager.create_safety_snapshot(conf_uid, "before_memory_edit")
             content = str(body.get("content") or "")
             memory_records.replace_manual_memory(conf_uid, content)
             content = memory_records.active_memory_text(conf_uid, settings["max_chars"])
@@ -453,7 +568,45 @@ def init_companion_routes() -> APIRouter:
             "ok": True,
             "records": records,
             "conflicts": [r for r in records if r.get("status") == "pending_conflict"],
+            "pending_confirmation": [
+                r for r in records if r.get("status") == "pending_confirmation"
+            ],
         }
+
+    @router.post("/api/companion/memory/{conf_uid}/records/{record_id}/confirm")
+    async def confirm_memory_record(conf_uid: str, record_id: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        try:
+            records = memory_records.confirm_record(
+                conf_uid, record_id, bool(body.get("accept", True))
+            )
+            settings = get_memory_settings(conf_uid)
+            content = memory_records.active_memory_text(conf_uid, settings["max_chars"])
+            save_core_memory(conf_uid, content, settings["max_chars"])
+            return {"ok": True, "records": records, "content": content}
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
+    @router.put("/api/companion/memory/{conf_uid}/records/{record_id}")
+    async def update_memory_record(conf_uid: str, record_id: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        try:
+            records = memory_records.update_record(
+                conf_uid,
+                record_id,
+                importance=body.get("importance"),
+                expires_at=body.get("expires_at"),
+            )
+            settings = get_memory_settings(conf_uid)
+            content = memory_records.active_memory_text(conf_uid, settings["max_chars"])
+            save_core_memory(conf_uid, content, settings["max_chars"])
+            return {"ok": True, "records": records, "content": content}
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     @router.post("/api/companion/memory/{conf_uid}/resolve/{winner_id}")
     async def resolve_memory_conflict(conf_uid: str, winner_id: str, request: Request):
@@ -481,6 +634,7 @@ def init_companion_routes() -> APIRouter:
     async def clear_memory(conf_uid: str, request: Request):
         if forbidden := _local_only(request):
             return forbidden
+        backup_manager.create_safety_snapshot(conf_uid, "before_memory_clear")
         memory_records.forget_active_records(conf_uid)
         return {"ok": clear_core_memory(conf_uid)}
 
@@ -551,6 +705,9 @@ def init_companion_routes() -> APIRouter:
             "ok": True,
             **get_proactive_settings(),
             "runtime": proactive_manager.get_runtime(conf_uid) if conf_uid else {},
+            "environment_status": environment_awareness.evaluate(
+                get_proactive_settings()
+            ),
         }
 
     @router.put("/api/companion/proactive")
@@ -569,6 +726,7 @@ def init_companion_routes() -> APIRouter:
             "daily_limit",
             "recent_topic_window",
             "quiet_hours",
+            "environment",
         ):
             if key in body:
                 settings[key] = body[key]
@@ -649,6 +807,7 @@ def init_companion_routes() -> APIRouter:
             return JSONResponse(
                 {"ok": False, "error": "profile not found"}, status_code=404
             )
+        backup_manager.create_safety_snapshot(conf_uid, "before_voice_activation")
         _activate_voice(conf_uid, profile)
         state["active_voice"][conf_uid] = profile_id
         _save_state(state)
@@ -670,6 +829,7 @@ def init_companion_routes() -> APIRouter:
             return JSONResponse(
                 {"ok": False, "error": "profile not found"}, status_code=404
             )
+        backup_manager.create_safety_snapshot(conf_uid, "before_voice_delete")
         path = Path(str(profile.get("ref_audio_path", ""))).resolve()
         voice_root = VOICE_DIR.resolve()
         if path.is_file() and (path == voice_root or voice_root in path.parents):

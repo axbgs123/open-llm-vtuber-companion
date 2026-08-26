@@ -32,6 +32,12 @@ configuration system. Removing a character archives its YAML under
   and preferences are conflict-checked. New conflicting claims stay pending
   until the owner chooses which fact to keep.
 - Every sourced fact can open its original transcript.
+- Memory records also carry importance, expiry, confirmation state and last
+  confirmation time. Short-lived plans expire automatically; low-confidence
+  notes are excluded from prompts until the owner confirms them.
+- Stable extraction covers identity, preferred name, location, occupation,
+  birthday, family relations, current projects, recurring habits and near-term
+  plans. Near-duplicate facts merge their source trails.
 
 ### Hybrid history retrieval
 
@@ -47,6 +53,29 @@ configuration system. Removing a character archives its YAML under
 - Recent-topic dedupe, daily cap and quiet hours.
 - Adaptive cadence increases the delay after unanswered proactive messages and
   gently decreases it after repeated responses.
+- Read-only macOS presence signals suppress proactive speech during meetings,
+  full-screen apps, Focus mode, lock screen, likely microphone use, or extended
+  absence. No window titles or activity contents are stored.
+
+### Encrypted backup vault
+
+- A machine-local Fernet key encrypts `.aicbackup` archives. The key is mode
+  `0600`, remains under ignored `companion_data/`, and is never pushed.
+- Daily global backups are incremental after the first full snapshot.
+- Character backups include that character's YAML, history, structured memory,
+  voice profiles and reference files. Character state is merged on restore.
+- Destructive character, memory and voice actions create a safety snapshot.
+- Restore itself creates a pre-restore snapshot.
+- Export `companion-backup-recovery.key` separately from the encrypted archives;
+  it is required to decrypt backups after moving to another machine.
+
+### Versioned data and upstream updates
+
+- `companion_data/schema.json` tracks companion-data schema migrations.
+- Startup migrates old records after making a backup when appropriate.
+- `sync-upstream.command` requires a clean worktree, creates an encrypted backup,
+  fetches official upstream, aborts cleanly on conflicts, then runs migrations
+  and tests.
 
 ### Voice cloning
 

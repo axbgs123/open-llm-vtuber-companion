@@ -293,6 +293,7 @@ class WebSocketHandler:
             effective_idle_seconds,
             record_trigger,
         )
+        from .environment_awareness import evaluate as evaluate_environment
 
         try:
             while client_uid in self.client_connections:
@@ -304,6 +305,13 @@ class WebSocketHandler:
                 conf_uid = context.character_config.conf_uid
                 allowed, _reason = can_trigger(conf_uid, settings)
                 if not allowed:
+                    continue
+                environment = await asyncio.to_thread(evaluate_environment, settings)
+                if not environment["allowed"]:
+                    logger.debug(
+                        f"[proactive] suppressed by environment: "
+                        f"{environment['reasons']}"
+                    )
                     continue
                 now = asyncio.get_running_loop().time()
                 last = self._last_human_activity.get(client_uid, now)

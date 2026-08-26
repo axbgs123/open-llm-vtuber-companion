@@ -17,6 +17,8 @@ from starlette.staticfiles import StaticFiles as StarletteStaticFiles
 from .routes import init_client_ws_route, init_webtool_routes, init_proxy_route
 from .companion_routes import init_companion_routes
 from .runtime_manager import start_monitor, stop_monitor
+from .backup_manager import start_daily_backup, stop_daily_backup
+from .data_migrations import run_migrations
 from .service_context import ServiceContext
 from .config_manager.utils import Config
 
@@ -102,11 +104,14 @@ class WebSocketServer:
 
         @self.app.on_event("startup")
         async def _start_companion_runtime():
+            run_migrations()
             start_monitor()
+            start_daily_backup()
 
         @self.app.on_event("shutdown")
         async def _stop_companion_runtime():
             await stop_monitor()
+            await stop_daily_backup()
 
         # Initialize and include proxy routes if proxy is enabled
         system_config = config.system_config
