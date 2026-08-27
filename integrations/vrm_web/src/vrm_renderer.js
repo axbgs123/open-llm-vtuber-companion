@@ -34,6 +34,7 @@ const state = {
   lastGesture: "",
   mixer: null,
   vrmaActions: new Map(),
+  mocapActions: new Map(),
   builtinActions: new Map(),
   activeVrmaAction: null,
   motionSource: "idle",
@@ -87,6 +88,63 @@ const gestureDurations = {
   idle: 0,
 };
 
+const mesh2MotionRigMap = {
+  pelvis: "hips",
+  spine_01: "spine",
+  spine_02: "chest",
+  spine_03: "upperChest",
+  neck_01: "neck",
+  head: "head",
+  clavicle_l: "leftShoulder",
+  upperarm_l: "leftUpperArm",
+  lowerarm_l: "leftLowerArm",
+  hand_l: "leftHand",
+  clavicle_r: "rightShoulder",
+  upperarm_r: "rightUpperArm",
+  lowerarm_r: "rightLowerArm",
+  hand_r: "rightHand",
+  thigh_l: "leftUpperLeg",
+  calf_l: "leftLowerLeg",
+  foot_l: "leftFoot",
+  ball_l: "leftToes",
+  thigh_r: "rightUpperLeg",
+  calf_r: "rightLowerLeg",
+  foot_r: "rightFoot",
+  ball_r: "rightToes",
+};
+
+for (const side of ["l", "r"]) {
+  const prefix = side === "l" ? "left" : "right";
+  Object.assign(mesh2MotionRigMap, {
+    [`thumb_01_${side}`]: `${prefix}ThumbMetacarpal`,
+    [`thumb_02_${side}`]: `${prefix}ThumbProximal`,
+    [`thumb_03_${side}`]: `${prefix}ThumbDistal`,
+    [`index_01_${side}`]: `${prefix}IndexProximal`,
+    [`index_02_${side}`]: `${prefix}IndexIntermediate`,
+    [`index_03_${side}`]: `${prefix}IndexDistal`,
+    [`middle_01_${side}`]: `${prefix}MiddleProximal`,
+    [`middle_02_${side}`]: `${prefix}MiddleIntermediate`,
+    [`middle_03_${side}`]: `${prefix}MiddleDistal`,
+    [`ring_01_${side}`]: `${prefix}RingProximal`,
+    [`ring_02_${side}`]: `${prefix}RingIntermediate`,
+    [`ring_03_${side}`]: `${prefix}RingDistal`,
+    [`pinky_01_${side}`]: `${prefix}LittleProximal`,
+    [`pinky_02_${side}`]: `${prefix}LittleIntermediate`,
+    [`pinky_03_${side}`]: `${prefix}LittleDistal`,
+  });
+}
+
+const mocapGestureClips = {
+  idle: "Idle_Subtle",
+  wave: "Greeting",
+  nod: "Head Nod",
+  shake: "Reject",
+  think: "Confused",
+  shy: "Idle Listening",
+  celebrate: "Victory",
+  surprised: "Confused",
+};
+
 function emitStatus(status, detail = "") {
   document.documentElement.dataset.companionRenderer = state.active ? "vrm" : "live2d";
   document.documentElement.dataset.companionVrmStatus = status;
@@ -100,6 +158,7 @@ function emitStatus(status, detail = "") {
 
 function emitGesture(name, source = "procedural") {
   document.documentElement.dataset.companionGesture = name;
+  document.documentElement.dataset.companionMotionSource = source;
   window.dispatchEvent(
     new CustomEvent("companion-vrm-gesture", { detail: { name, source } }),
   );
@@ -253,6 +312,7 @@ function disposeCurrentModel() {
   state.mixer?.stopAllAction();
   state.mixer = null;
   state.vrmaActions.clear();
+  state.mocapActions.clear();
   state.builtinActions.clear();
   state.activeVrmaAction = null;
 }
@@ -443,6 +503,93 @@ function prepareBuiltinAnimations() {
   ]);
 }
 
+// Mesh2Motion publishes its animation assets under CC0. This retargeter follows
+// the same normalized-rest-pose approach used by Google's XRBlocks VRM demo.
+function retargetMesh2MotionClip(sourceClip, sourceScene, vrm) {
+  const tracks = [];
+  const sourceRestInverse = new THREE.Quaternion();
+  const sourceParentRest = new THREE.Quaternion();
+  const animatedQuaternion = new THREE.Quaternion();
+  const isVrm0 = vrm.meta?.metaVersion === "0";
+  sourceScene.updateMatrixWorld(true);
+
+  for (const track of sourceClip.tracks) {
+    if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+    const [sourceName] = track.name.split(".");
+    const sourceNode =
+      sourceScene.getObjectByName(sourceName) ||
+      sourceScene.getObjectByProperty("uuid", sourceName);
+    const vrmBoneName = sourceNode ? mesh2MotionRigMap[sourceNode.name] : null;
+    const targetNode = vrmBoneName
+      ? vrm.humanoid?.getNormalizedBoneNode(vrmBoneName)
+      : null;
+    if (!sourceNode || !sourceNode.parent || !targetNode) continue;
+
+    sourceNode.getWorldQuaternion(sourceRestInverse).invert();
+    sourceNode.parent.getWorldQuaternion(sourceParentRest);
+    const values = new Float32Array(track.values.length);
+    for (let index = 0; index < track.values.length; index += 4) {
+      animatedQuaternion
+        .fromArray(track.values, index)
+        .premultiply(sourceParentRest)
+        .multiply(sourceRestInverse);
+      if (isVrm0) {
+        animatedQuaternion.x *= -1;
+        animatedQuaternion.z *= -1;
+      }
+      animatedQuaternion.toArray(values, index);
+    }
+    tracks.push(
+      new THREE.QuaternionKeyframeTrack(
+        `${targetNode.name}.quaternion`,
+        track.times,
+        values,
+        THREE.InterpolateLinear,
+      ),
+    );
+  }
+
+  return new THREE.AnimationClip(
+    `mocap:${sourceClip.name}`,
+    sourceClip.duration,
+    tracks,
+  ).optimize();
+}
+
+async function loadBundledMocapActions() {
+  state.mocapActions.clear();
+  if (!state.vrm || !state.mixer) return;
+  try {
+    const loader = new GLTFLoader();
+    const gltf = await loader.loadAsync(
+      "/companion-assets/motions/human-addon-animations.glb",
+    );
+    for (const [gesture, clipName] of Object.entries(mocapGestureClips)) {
+      const sourceClip = THREE.AnimationClip.findByName(gltf.animations, clipName);
+      if (!sourceClip) continue;
+      const clip = retargetMesh2MotionClip(sourceClip, gltf.scene, state.vrm);
+      if (!clip.tracks.length) continue;
+      const action = state.mixer.clipAction(clip);
+      const loop = gesture === "idle" || gesture === "shy";
+      action.enabled = true;
+      action.clampWhenFinished = !loop;
+      action.zeroSlopeAtStart = true;
+      action.zeroSlopeAtEnd = true;
+      action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+      state.mocapActions.set(gesture, {
+        action,
+        profile: { loop, name: clipName, gesture },
+      });
+    }
+    document.documentElement.dataset.companionMocapCount = String(
+      state.mocapActions.size,
+    );
+  } catch (error) {
+    document.documentElement.dataset.companionMocapCount = "0";
+    console.warn("[Companion VRM] CC0动作库加载失败，使用内置动作", error);
+  }
+}
+
 async function loadModel(modelUrl, animations = []) {
   await ensureRenderer();
   disposeCurrentModel();
@@ -474,6 +621,7 @@ async function loadModel(modelUrl, animations = []) {
   vrm.update(0);
   fitCamera();
   applyRendererVisibility(true);
+  await loadBundledMocapActions();
   await loadAnimations(animations);
   emitStatus("ready", state.profile?.name || "VRM角色已就绪");
   const previewGesture = new URLSearchParams(window.location.search).get("gesture");
@@ -610,11 +758,12 @@ function chooseSemanticGesture(text, emotion) {
 
 function playVrmaGesture(name) {
   const group = state.vrmaActions.get(name);
+  const mocap = state.mocapActions.get(name);
   const builtin = state.builtinActions.get(name);
-  if ((!group?.length && !builtin) || !state.mixer) return false;
+  if ((!group?.length && !mocap && !builtin) || !state.mixer) return false;
   const selected = group?.length
     ? group[Math.abs(Math.floor(state.elapsed * 10)) % group.length]
-    : builtin;
+    : mocap || builtin;
   const { action, profile } = selected;
   const previous = state.activeVrmaAction;
   if (previous === action && name === "idle" && action.isRunning()) return true;
@@ -630,11 +779,11 @@ function playVrmaGesture(name) {
     action.fadeIn(0.24).play();
   }
   state.activeVrmaAction = action;
-  state.motionSource = group?.length ? "vrma" : "builtin";
+  state.motionSource = group?.length ? "vrma" : mocap ? "mocap" : "builtin";
   state.gesture = name;
   state.gestureStartedAt = performance.now();
   state.gestureDuration = Math.max(0.5, action.getClip().duration);
-  emitGesture(name, group?.length ? "vrma" : "builtin");
+  emitGesture(name, state.motionSource);
   return true;
 }
 

@@ -116,6 +116,10 @@ configuration system. Removing a character archives its YAML under
   shoulder–elbow–hand chain. The wave target follows the animated wrist while
   moving toward the viewer; middle-finger and thumb geometry derive the actual
   finger direction and palm normal so different VRM hand axes still face forward.
+- Eight full-body clips are retargeted at runtime from Mesh2Motion's CC0 human
+  motion library: subtle idle, greeting, head nod, rejection, confusion,
+  listening, victory and surprise. The playback priority is custom VRMA, then
+  CC0 mocap, then quaternion/IK fallback, so normal use avoids synthesized poses.
 - Pointer-aware gaze uses the VRM look-at system and eases back to the camera
   when the pointer leaves the stage.
 - Optional `.vrma` files can be bound to semantic gestures. They cross-fade in,
