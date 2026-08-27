@@ -368,12 +368,12 @@ function prepareBuiltinAnimations() {
   createPoseClip("wave", 2.75, [
     { time: 0, pose: base },
     { time: 0.16, pose: poseWith({ chest: [0, 0.025, 0], head: [0, -0.035, 0] }) },
-    { time: 0.58, pose: poseWith({ rightShoulder: [0, 0.06, -0.1], rightUpperArm: [-0.27, -0.24, -0.14], rightLowerArm: [0.05, 0, 1.58], rightHand: [0.04, 0.08, -0.18], chest: [0, -0.045, 0.012], spine: [0, -0.018, 0], head: [0, 0.05, 0.018] }) },
-    { time: 0.92, pose: poseWith({ rightShoulder: [0, 0.055, -0.1], rightUpperArm: [-0.29, -0.22, -0.1], rightLowerArm: [0.12, 0, 1.72], rightHand: [0.03, 0.16, 0.3], chest: [0, -0.05, 0.014], spine: [0, -0.02, 0], head: [0, 0.055, 0.015] }) },
-    { time: 1.22, pose: poseWith({ rightShoulder: [0, 0.05, -0.1], rightUpperArm: [-0.27, -0.24, -0.13], rightLowerArm: [-0.1, 0, 1.6], rightHand: [-0.03, -0.15, -0.3], chest: [0, -0.045, 0.012], spine: [0, -0.018, 0], head: [0, 0.045, 0.012] }) },
-    { time: 1.52, pose: poseWith({ rightShoulder: [0, 0.055, -0.1], rightUpperArm: [-0.29, -0.22, -0.1], rightLowerArm: [0.11, 0, 1.72], rightHand: [0.03, 0.16, 0.3], chest: [0, -0.05, 0.014], spine: [0, -0.02, 0], head: [0, 0.055, 0.015] }) },
-    { time: 1.82, pose: poseWith({ rightShoulder: [0, 0.05, -0.1], rightUpperArm: [-0.27, -0.24, -0.13], rightLowerArm: [-0.08, 0, 1.6], rightHand: [-0.03, -0.13, -0.26], chest: [0, -0.045, 0.012], spine: [0, -0.018, 0], head: [0, 0.045, 0.012] }) },
-    { time: 2.18, pose: poseWith({ rightUpperArm: [-0.17, -0.1, -0.5], rightLowerArm: [0.02, 0, 0.88], chest: [0, -0.02, 0], head: [0, 0.025, 0] }) },
+    { time: 0.58, pose: poseWith({ rightShoulder: [0, 0.1, -0.08], rightUpperArm: [-0.17, 0.38, -0.42], rightLowerArm: [0.05, 0.08, 1.55], rightHand: [0, 1.02, 0], chest: [0, -0.025, 0.012], spine: [0, -0.01, 0], head: [0, 0.035, 0.018] }) },
+    { time: 0.92, pose: poseWith({ rightShoulder: [0, 0.11, -0.08], rightUpperArm: [-0.18, 0.46, -0.38], rightLowerArm: [0.18, 0.1, 1.68], rightHand: [0, 1.02, 0], chest: [0, -0.03, 0.014], spine: [0, -0.012, 0], head: [0, 0.04, 0.015] }) },
+    { time: 1.22, pose: poseWith({ rightShoulder: [0, 0.1, -0.08], rightUpperArm: [-0.17, 0.42, -0.4], rightLowerArm: [-0.17, 0.06, 1.57], rightHand: [0, 1.02, 0], chest: [0, -0.025, 0.012], spine: [0, -0.01, 0], head: [0, 0.032, 0.012] }) },
+    { time: 1.52, pose: poseWith({ rightShoulder: [0, 0.11, -0.08], rightUpperArm: [-0.18, 0.46, -0.38], rightLowerArm: [0.17, 0.1, 1.68], rightHand: [0, 1.02, 0], chest: [0, -0.03, 0.014], spine: [0, -0.012, 0], head: [0, 0.04, 0.015] }) },
+    { time: 1.82, pose: poseWith({ rightShoulder: [0, 0.1, -0.08], rightUpperArm: [-0.17, 0.42, -0.4], rightLowerArm: [-0.15, 0.06, 1.57], rightHand: [0, 1.02, 0], chest: [0, -0.025, 0.012], spine: [0, -0.01, 0], head: [0, 0.032, 0.012] }) },
+    { time: 2.18, pose: poseWith({ rightUpperArm: [-0.14, 0.2, -0.62], rightLowerArm: [0.02, 0.03, 0.84], rightHand: [0, 0.35, 0], chest: [0, -0.012, 0], head: [0, 0.018, 0] }) },
     { time: 2.75, pose: base },
   ]);
 
@@ -417,9 +417,9 @@ function prepareBuiltinAnimations() {
   createPoseClip("emphasize", 1.95, [
     { time: 0, pose: base },
     { time: 0.2, pose: poseWith({ chest: [0, 0.018, 0], head: [0, -0.018, 0] }) },
-    { time: 0.58, pose: poseWith({ rightShoulder: [0, 0.025, -0.035], rightUpperArm: [-0.15, -0.14, -0.72], rightLowerArm: [0.05, 0.08, 0.22], rightHand: [0.06, 0, -0.08], chest: [-0.015, -0.055, 0], head: [0.01, 0.045, 0.01] }) },
-    { time: 0.94, pose: poseWith({ rightUpperArm: [-0.13, -0.1, -0.82], rightLowerArm: [0.03, 0.05, 0.15], chest: [0, -0.028, 0], head: [0, 0.02, 0] }) },
-    { time: 1.28, pose: poseWith({ rightUpperArm: [-0.16, -0.12, -0.7], rightLowerArm: [0.05, 0.08, 0.24], chest: [-0.012, -0.05, 0], head: [0.008, 0.04, 0.008] }) },
+    { time: 0.58, pose: poseWith({ rightShoulder: [0, 0.08, -0.035], rightUpperArm: [-0.12, 0.32, -0.7], rightLowerArm: [0.04, 0.05, 0.55], rightHand: [0, 0.82, 0], chest: [-0.015, -0.04, 0.008], head: [0.01, 0.035, 0.01] }) },
+    { time: 0.94, pose: poseWith({ rightShoulder: [0, 0.05, -0.025], rightUpperArm: [-0.1, 0.2, -0.85], rightLowerArm: [0.02, 0.03, 0.35], rightHand: [0, 0.68, 0], chest: [0, -0.02, 0], head: [0, 0.015, 0] }) },
+    { time: 1.28, pose: poseWith({ rightShoulder: [0, 0.09, -0.04], rightUpperArm: [-0.13, 0.35, -0.68], rightLowerArm: [0.04, 0.06, 0.58], rightHand: [0, 0.84, 0], chest: [-0.012, -0.038, 0.008], head: [0.008, 0.032, 0.008] }) },
     { time: 1.95, pose: base },
   ]);
 
