@@ -623,6 +623,39 @@ async function loadBundledIdleAction() {
     const animation = gltf.userData.vrmAnimations?.[0];
     if (!animation) throw new Error("文件中没有VRMC_vrm_animation数据");
     const clip = createVRMAnimationClip(animation, state.vrm);
+    const idleArmTargets = new Map();
+    for (const [boneName, rotationZ] of [
+      ["leftUpperArm", 1.52],
+      ["rightUpperArm", -1.52],
+    ]) {
+      const node = state.vrm.humanoid?.getNormalizedBoneNode(boneName);
+      if (!node) continue;
+      idleArmTargets.set(
+        node.name,
+        new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(-0.045, 0, rotationZ, "XYZ"),
+        ),
+      );
+    }
+    const animatedArmQuaternion = new THREE.Quaternion();
+    let adjustedArmTracks = 0;
+    for (const track of clip.tracks) {
+      if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+      const targetName = track.name.slice(0, track.name.lastIndexOf("."));
+      const targetQuaternion = idleArmTargets.get(targetName);
+      if (!targetQuaternion) continue;
+      for (let index = 0; index < track.values.length; index += 4) {
+        animatedArmQuaternion
+          .fromArray(track.values, index)
+          .slerp(targetQuaternion, 0.82)
+          .toArray(track.values, index);
+      }
+      adjustedArmTracks += 1;
+    }
+    document.documentElement.dataset.companionIdleArmTracksAdjusted = String(
+      adjustedArmTracks,
+    );
+    clip.resetDuration().optimize();
     clip.name = "Hikari Idle";
     const action = state.mixer.clipAction(clip);
     action.enabled = true;

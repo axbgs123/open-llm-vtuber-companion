@@ -123,9 +123,11 @@ configuration system. Removing a character archives its YAML under
 - Hikari Archive's loopable MIT-licensed VRMA is the bundled default idle. It
   uses a restrained upright stance with breathing and head movement; gestures
   cross-fade back to it, while a character-uploaded idle VRMA still takes
-  priority. The original procedural stance remains the automatic fallback if
-  the asset cannot load. The avatar itself can be dragged in the chat stage,
-  and its X/Y placement is stored per character.
+  priority. Its upper-arm tracks are normalized toward a near-vertical relaxed
+  angle so different VRM proportions do not make the hands flare outward. The
+  original procedural stance remains the automatic fallback if the asset cannot load.
+  The avatar itself can be dragged in the chat stage, and its X/Y placement is
+  stored per character.
 - The motion composer saves two-to-five-step sequences such as greeting → nod →
   bow and can bind the resulting choreography to a semantic trigger. Steps use
   the same custom-VRMA/CC0/fallback priority and transition through the mixer.
