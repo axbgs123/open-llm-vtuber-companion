@@ -108,6 +108,10 @@ configuration system. Removing a character archives its YAML under
   thinking language and emotions to wave, nod, shake, thoughtful tilt,
   emphasis, shy, surprised and open-happy gestures. Per-character style,
   intensity and frequency controls keep movement from becoming repetitive.
+- Text and transcribed speech emit a dedicated semantic-input cue before the
+  LLM responds, so phrases such as greetings, agreement, refusal and thinking
+  trigger their gestures from the user's intent rather than depending on the
+  assistant to repeat the same keywords in its reply.
 - Built-in gestures are multi-bone quaternion keyframe clips with anticipation,
   action, overshoot and settle phases. A shared Three.js `AnimationMixer`
   cross-fades gestures and VRMA clips into the breathing idle rather than

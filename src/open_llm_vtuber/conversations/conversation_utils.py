@@ -155,8 +155,12 @@ async def process_user_input(
         await websocket_send(
             json.dumps({"type": "user-input-transcription", "text": input_text})
         )
-        return input_text
-    return user_input
+    else:
+        input_text = user_input
+    await websocket_send(
+        json.dumps({"type": "companion-semantic-input", "text": input_text})
+    )
+    return input_text
 
 
 async def finalize_conversation_turn(

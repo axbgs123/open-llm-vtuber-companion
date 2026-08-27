@@ -208,6 +208,14 @@ function handleMessage(message) {
     void selectCharacter(String(message.conf_uid));
     return;
   }
+  if (message?.type === "companion-semantic-input") {
+    const text = String(message.text || "");
+    const gesture = chooseSemanticGesture(text, "neutral");
+    document.documentElement.dataset.companionSemanticInput = text.slice(0, 80);
+    document.documentElement.dataset.companionSemanticGesture = gesture || "none";
+    if (gesture) triggerGesture(gesture, text, true);
+    return;
+  }
   if (message?.type === "audio") {
     const expressions = message.actions?.expressions || [];
     const requested = expressions.find((item) => typeof item === "string");

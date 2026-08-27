@@ -27,6 +27,7 @@ from src.open_llm_vtuber import (
 from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
 from src.open_llm_vtuber.tts.cosyvoice_tts import TTSEngine as CosyVoiceEngine
 from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
+from src.open_llm_vtuber.conversations import conversation_utils
 from src.open_llm_vtuber.agent.output_types import Actions, DisplayText
 from src.open_llm_vtuber.server import inject_companion_lipsync
 from src.open_llm_vtuber.chat_history_manager import get_history_list
@@ -64,6 +65,27 @@ class CompanionFeatureTests(unittest.TestCase):
         self.assertEqual(
             inject_companion_lipsync(injected).count("vrm_renderer.mjs"), 1
         )
+
+    def test_text_input_emits_companion_semantic_cue(self):
+        async def run():
+            websocket_send = AsyncMock()
+            result = await conversation_utils.process_user_input(
+                "你好，很高兴见到你", AsyncMock(), websocket_send
+            )
+            self.assertEqual(result, "你好，很高兴见到你")
+            messages = [
+                json.loads(call.args[0])
+                for call in websocket_send.await_args_list
+            ]
+            self.assertIn(
+                {
+                    "type": "companion-semantic-input",
+                    "text": "你好，很高兴见到你",
+                },
+                messages,
+            )
+
+        asyncio.run(run())
 
     def test_avatar_settings_are_per_character_and_bounded(self):
         data_dir = self.root / "companion_data"
