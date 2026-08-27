@@ -112,6 +112,10 @@ configuration system. Removing a character archives its YAML under
   action, overshoot and settle phases. A shared Three.js `AnimationMixer`
   cross-fades gestures and VRMA clips into the breathing idle rather than
   directly overwriting Euler angles every frame.
+- Camera-facing gestures add a lightweight CCD IK pass over the normalized
+  shoulder–elbow–hand chain. The wave target follows the animated wrist while
+  moving toward the viewer; middle-finger and thumb geometry derive the actual
+  finger direction and palm normal so different VRM hand axes still face forward.
 - Pointer-aware gaze uses the VRM look-at system and eases back to the camera
   when the pointer leaves the stage.
 - Optional `.vrma` files can be bound to semantic gestures. They cross-fade in,

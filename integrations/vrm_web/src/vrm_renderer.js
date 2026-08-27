@@ -36,6 +36,7 @@ const state = {
   vrmaActions: new Map(),
   builtinActions: new Map(),
   activeVrmaAction: null,
+  motionSource: "idle",
   gaze: { x: 0, y: 0, targetX: 0, targetY: 0 },
   lookAtTarget: null,
   lookAtBase: new THREE.Vector3(0, 1.5, 1),
@@ -629,6 +630,7 @@ function playVrmaGesture(name) {
     action.fadeIn(0.24).play();
   }
   state.activeVrmaAction = action;
+  state.motionSource = group?.length ? "vrma" : "builtin";
   state.gesture = name;
   state.gestureStartedAt = performance.now();
   state.gestureDuration = Math.max(0.5, action.getClip().duration);
@@ -677,6 +679,150 @@ function updateExpressions(now) {
   }
 }
 
+const ikTarget = new THREE.Vector3();
+const ikHead = new THREE.Vector3();
+const ikEffector = new THREE.Vector3();
+const ikLinkPosition = new THREE.Vector3();
+const ikEffectorDirection = new THREE.Vector3();
+const ikTargetDirection = new THREE.Vector3();
+const ikCameraDirection = new THREE.Vector3();
+const ikCameraRight = new THREE.Vector3();
+const ikWorldQuaternion = new THREE.Quaternion();
+const ikParentQuaternion = new THREE.Quaternion();
+const ikDeltaQuaternion = new THREE.Quaternion();
+const ikDesiredWorldQuaternion = new THREE.Quaternion();
+const ikDesiredLocalQuaternion = new THREE.Quaternion();
+const ikIdentityQuaternion = new THREE.Quaternion();
+const ikFingerUp = new THREE.Vector3(0, 1, 0);
+const ikFingerDirection = new THREE.Vector3();
+const ikThumbDirection = new THREE.Vector3();
+const ikPalmNormal = new THREE.Vector3();
+const ikNormalAfterFinger = new THREE.Vector3();
+const ikDesiredPalmNormal = new THREE.Vector3();
+const ikCross = new THREE.Vector3();
+const ikMiddlePosition = new THREE.Vector3();
+const ikThumbPosition = new THREE.Vector3();
+const ikFingerCorrection = new THREE.Quaternion();
+const ikPalmCorrection = new THREE.Quaternion();
+
+function solveIkLink(link, effector, target, blend) {
+  link.updateWorldMatrix(true, true);
+  effector.getWorldPosition(ikEffector);
+  link.getWorldPosition(ikLinkPosition);
+  ikEffectorDirection.copy(ikEffector).sub(ikLinkPosition).normalize();
+  ikTargetDirection.copy(target).sub(ikLinkPosition).normalize();
+  if (!Number.isFinite(ikEffectorDirection.x) || !Number.isFinite(ikTargetDirection.x)) return;
+  ikDeltaQuaternion.setFromUnitVectors(ikEffectorDirection, ikTargetDirection);
+  const angle = 2 * Math.acos(THREE.MathUtils.clamp(ikDeltaQuaternion.w, -1, 1));
+  if (angle > 0.45) {
+    ikDeltaQuaternion.slerpQuaternions(
+      ikIdentityQuaternion,
+      ikDeltaQuaternion,
+      0.45 / angle,
+    );
+  }
+  link.getWorldQuaternion(ikWorldQuaternion);
+  ikWorldQuaternion.premultiply(ikDeltaQuaternion);
+  link.parent.getWorldQuaternion(ikParentQuaternion).invert();
+  ikDesiredLocalQuaternion.copy(ikParentQuaternion).multiply(ikWorldQuaternion);
+  link.quaternion.slerp(ikDesiredLocalQuaternion, blend);
+  link.updateWorldMatrix(true, true);
+}
+
+function applyWaveIk() {
+  if (
+    state.gesture !== "wave" ||
+    state.motionSource !== "builtin" ||
+    !state.activeVrmaAction ||
+    !state.camera
+  ) {
+    return;
+  }
+  const humanoid = state.vrm?.humanoid;
+  const upperArm = humanoid?.getNormalizedBoneNode("rightUpperArm");
+  const lowerArm = humanoid?.getNormalizedBoneNode("rightLowerArm");
+  const hand = humanoid?.getNormalizedBoneNode("rightHand");
+  const middle = humanoid?.getNormalizedBoneNode("rightMiddleProximal");
+  const thumb =
+    humanoid?.getNormalizedBoneNode("rightThumbMetacarpal") ||
+    humanoid?.getNormalizedBoneNode("rightThumbProximal");
+  const head = humanoid?.getNormalizedBoneNode("head");
+  if (!upperArm || !lowerArm || !hand || !head) return;
+
+  const duration = Math.max(0.001, state.activeVrmaAction.getClip().duration);
+  const progress = THREE.MathUtils.clamp(state.activeVrmaAction.time / duration, 0, 1);
+  const rise = THREE.MathUtils.smoothstep(progress, 0.12, 0.3);
+  const fall = 1 - THREE.MathUtils.smoothstep(progress, 0.76, 0.96);
+  const blend = rise * fall;
+  if (blend <= 0.001) return;
+
+  state.vrm.scene.updateMatrixWorld(true);
+  hand.getWorldQuaternion(ikDesiredWorldQuaternion);
+  hand.getWorldPosition(ikEffector);
+  head.getWorldPosition(ikHead);
+  state.camera.getWorldDirection(ikCameraDirection).multiplyScalar(-1).normalize();
+  ikCameraRight.set(1, 0, 0).applyQuaternion(state.camera.quaternion).normalize();
+  if (middle && thumb) {
+    middle.getWorldPosition(ikMiddlePosition);
+    thumb.getWorldPosition(ikThumbPosition);
+    ikFingerDirection.copy(ikMiddlePosition).sub(ikEffector).normalize();
+    ikThumbDirection.copy(ikThumbPosition).sub(ikEffector).normalize();
+    ikPalmNormal.crossVectors(ikThumbDirection, ikFingerDirection).normalize();
+    if (ikPalmNormal.dot(ikCameraDirection) < 0) ikPalmNormal.negate();
+    ikFingerCorrection.setFromUnitVectors(ikFingerDirection, ikFingerUp);
+    ikNormalAfterFinger.copy(ikPalmNormal).applyQuaternion(ikFingerCorrection);
+    ikNormalAfterFinger.addScaledVector(
+      ikFingerUp,
+      -ikNormalAfterFinger.dot(ikFingerUp),
+    ).normalize();
+    ikDesiredPalmNormal.copy(ikCameraDirection);
+    ikDesiredPalmNormal.addScaledVector(
+      ikFingerUp,
+      -ikDesiredPalmNormal.dot(ikFingerUp),
+    ).normalize();
+    const palmAngle = Math.atan2(
+      ikFingerUp.dot(
+        ikCross.crossVectors(ikNormalAfterFinger, ikDesiredPalmNormal),
+      ),
+      THREE.MathUtils.clamp(
+        ikNormalAfterFinger.dot(ikDesiredPalmNormal),
+        -1,
+        1,
+      ),
+    );
+    ikPalmCorrection.setFromAxisAngle(ikFingerUp, palmAngle);
+    ikDesiredWorldQuaternion
+      .premultiply(ikFingerCorrection)
+      .premultiply(ikPalmCorrection);
+  }
+  const waveOffset = Math.sin(progress * Math.PI * 6) * 0.035;
+  ikTarget
+    .copy(ikEffector)
+    .addScaledVector(ikCameraRight, waveOffset)
+    .addScaledVector(ikCameraDirection, 0.08);
+
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    solveIkLink(lowerArm, hand, ikTarget, 0.76 * blend);
+    solveIkLink(upperArm, hand, ikTarget, 0.66 * blend);
+  }
+
+  hand.parent.updateWorldMatrix(true, false);
+  hand.parent.getWorldQuaternion(ikParentQuaternion).invert();
+  ikDesiredLocalQuaternion
+    .copy(ikParentQuaternion)
+    .multiply(ikDesiredWorldQuaternion);
+  hand.quaternion.slerp(ikDesiredLocalQuaternion, blend);
+  hand.updateWorldMatrix(true, true);
+  hand.getWorldPosition(ikEffector);
+  document.documentElement.dataset.companionWaveReach = ikEffector
+    .distanceTo(ikTarget)
+    .toFixed(3);
+  document.documentElement.dataset.companionWaveDepth = ikEffector
+    .sub(ikHead)
+    .dot(ikCameraDirection)
+    .toFixed(3);
+}
+
 function updateGaze(delta) {
   if (!state.lookAtTarget || state.settings?.gaze_enabled === false) return;
   const response = 1 - Math.exp(-delta * 4.5);
@@ -696,6 +842,7 @@ function renderFrame(now) {
   state.elapsed += delta;
   if (!state.active || !state.vrm) return;
   state.mixer?.update(delta);
+  applyWaveIk();
   updateGaze(delta);
   updateExpressions(now);
   state.vrm.update(delta);

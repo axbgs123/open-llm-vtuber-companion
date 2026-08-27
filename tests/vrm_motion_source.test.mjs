@@ -11,5 +11,8 @@ test("built-in VRM gestures use quaternion clips and mixer cross-fades", () => {
   assert.match(source, /AnimationMixer/);
   assert.match(source, /crossFadeFrom/);
   assert.match(source, /prepareBuiltinAnimations/);
+  assert.match(source, /solveIkLink/);
+  assert.match(source, /rightMiddleProximal/);
+  assert.match(source, /companionWaveDepth/);
   assert.doesNotMatch(source, /updateProceduralPose/);
 });
