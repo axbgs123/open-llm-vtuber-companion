@@ -125,7 +125,10 @@ configuration system. Removing a character archives its YAML under
   cross-fade back to it, while a character-uploaded idle VRMA still takes
   priority. Its upper-arm tracks are normalized toward a near-vertical relaxed
   angle so different VRM proportions do not make the hands flare outward. The
-  original procedural stance remains the automatic fallback if the asset cannot load.
+  idle pass also maintains model-scaled lateral and camera-side clearance
+  between each hand, the coat hem and its nearest thigh, avoiding intersections
+  without forcing a visibly wide stance. The original procedural stance remains
+  the automatic fallback if the asset cannot load.
   The avatar itself can be dragged in the chat stage, and its X/Y placement is
   stored per character.
 - The motion composer saves two-to-five-step sequences such as greeting → nod →

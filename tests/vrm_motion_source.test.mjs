@@ -27,6 +27,8 @@ test("built-in VRM gestures use quaternion clips and mixer cross-fades", () => {
   assert.match(source, /loadBundledIdleAction/);
   assert.match(source, /hikari-idle\.vrma/);
   assert.match(source, /idleArmTargets/);
+  assert.match(source, /applyIdleHandClearance/);
+  assert.match(source, /companionIdleHandCorrections/);
   assert.doesNotMatch(source, /updateProceduralPose/);
 
   const mocap = "companion_assets/motions/human-addon-animations.glb";
