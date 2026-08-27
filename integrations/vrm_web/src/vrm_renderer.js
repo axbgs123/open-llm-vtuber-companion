@@ -979,6 +979,28 @@ const ikThumbPosition = new THREE.Vector3();
 const ikFingerCorrection = new THREE.Quaternion();
 const ikPalmCorrection = new THREE.Quaternion();
 
+const collisionHips = new THREE.Vector3();
+const collisionChest = new THREE.Vector3();
+const collisionNeck = new THREE.Vector3();
+const collisionHead = new THREE.Vector3();
+const collisionLeftShoulder = new THREE.Vector3();
+const collisionRightShoulder = new THREE.Vector3();
+const collisionTorsoCenter = new THREE.Vector3();
+const collisionRight = new THREE.Vector3();
+const collisionUp = new THREE.Vector3();
+const collisionForward = new THREE.Vector3();
+const collisionCameraForward = new THREE.Vector3();
+const collisionRelative = new THREE.Vector3();
+const collisionHandPosition = new THREE.Vector3();
+const collisionElbowPosition = new THREE.Vector3();
+const collisionForearmPosition = new THREE.Vector3();
+const collisionPalmPosition = new THREE.Vector3();
+const collisionFingerPosition = new THREE.Vector3();
+const collisionTarget = new THREE.Vector3();
+const collisionElbowTarget = new THREE.Vector3();
+const collisionHeadCenter = new THREE.Vector3();
+const collisionHeadOffset = new THREE.Vector3();
+
 function solveIkLink(link, effector, target, blend) {
   link.updateWorldMatrix(true, true);
   effector.getWorldPosition(ikEffector);
@@ -1097,6 +1119,201 @@ function applyWaveIk() {
     .toFixed(3);
 }
 
+function torsoPenetration(point, halfWidth, halfHeight, frontDepth) {
+  collisionRelative.copy(point).sub(collisionTorsoCenter);
+  const x = collisionRelative.dot(collisionRight);
+  const y = collisionRelative.dot(collisionUp);
+  const z = collisionRelative.dot(collisionForward);
+  const verticalRatio = Math.abs(y) / Math.max(halfHeight, 0.001);
+  if (verticalRatio >= 1) return 0;
+  const taperedWidth = halfWidth * (0.82 + 0.18 * (1 - verticalRatio));
+  if (Math.abs(x) >= taperedWidth || z <= -frontDepth * 0.75 || z >= frontDepth) {
+    return 0;
+  }
+  return frontDepth - z;
+}
+
+function headPenetration(point, radius) {
+  collisionHeadOffset.copy(point).sub(collisionHeadCenter);
+  const distance = collisionHeadOffset.length();
+  if (distance >= radius) return 0;
+  return radius - distance;
+}
+
+function applySelfCollisionAvoidance() {
+  if (
+    state.gesture === "idle" ||
+    !["mocap", "vrma"].includes(state.motionSource) ||
+    !state.camera
+  ) {
+    document.documentElement.dataset.companionCollisionCorrections = "0";
+    document.documentElement.dataset.companionCollisionProbe = "0.000";
+    return;
+  }
+  const humanoid = state.vrm?.humanoid;
+  const hips = humanoid?.getNormalizedBoneNode("hips");
+  const chest =
+    humanoid?.getNormalizedBoneNode("upperChest") ||
+    humanoid?.getNormalizedBoneNode("chest");
+  const neck = humanoid?.getNormalizedBoneNode("neck");
+  const head = humanoid?.getNormalizedBoneNode("head");
+  const leftShoulder = humanoid?.getNormalizedBoneNode("leftShoulder");
+  const rightShoulder = humanoid?.getNormalizedBoneNode("rightShoulder");
+  if (!hips || !chest || !neck || !head || !leftShoulder || !rightShoulder) return;
+
+  state.vrm.scene.updateMatrixWorld(true);
+  hips.getWorldPosition(collisionHips);
+  chest.getWorldPosition(collisionChest);
+  neck.getWorldPosition(collisionNeck);
+  head.getWorldPosition(collisionHead);
+  leftShoulder.getWorldPosition(collisionLeftShoulder);
+  rightShoulder.getWorldPosition(collisionRightShoulder);
+  collisionTorsoCenter
+    .copy(collisionHips)
+    .lerp(collisionNeck, 0.53)
+    .lerp(collisionChest, 0.16);
+  collisionRight.copy(collisionRightShoulder).sub(collisionLeftShoulder).normalize();
+  collisionUp.copy(collisionNeck).sub(collisionHips).normalize();
+  collisionForward.crossVectors(collisionRight, collisionUp).normalize();
+  state.camera.getWorldDirection(collisionCameraForward).multiplyScalar(-1).normalize();
+  if (collisionForward.dot(collisionCameraForward) < 0) collisionForward.negate();
+
+  const shoulderWidth = collisionLeftShoulder.distanceTo(collisionRightShoulder);
+  const torsoHeight = collisionHips.distanceTo(collisionNeck);
+  const halfWidth = shoulderWidth * 0.5;
+  const halfHeight = torsoHeight * 0.56;
+  const frontDepth = shoulderWidth * 0.34;
+  const forearmRadius = shoulderWidth * 0.085;
+  const handRadius = shoulderWidth * 0.11;
+  const headNeckDistance = collisionHead.distanceTo(collisionNeck);
+  collisionHeadCenter
+    .copy(collisionHead)
+    .addScaledVector(collisionUp, headNeckDistance * 0.42);
+  // Hair and sleeves extend well beyond the humanoid head/hand bones, so the
+  // safety radius deliberately includes a small visual-geometry margin.
+  const headRadius = Math.max(shoulderWidth * 0.53, headNeckDistance * 1.08);
+  let corrections = 0;
+  let strongestPenetration = 0;
+
+  for (const side of ["left", "right"]) {
+    const upperArm = humanoid.getNormalizedBoneNode(`${side}UpperArm`);
+    const lowerArm = humanoid.getNormalizedBoneNode(`${side}LowerArm`);
+    const hand = humanoid.getNormalizedBoneNode(`${side}Hand`);
+    const middle =
+      humanoid.getNormalizedBoneNode(`${side}MiddleDistal`) ||
+      humanoid.getNormalizedBoneNode(`${side}MiddleProximal`);
+    if (!upperArm || !lowerArm || !hand) continue;
+    hand.getWorldQuaternion(ikDesiredWorldQuaternion);
+    hand.getWorldPosition(collisionHandPosition);
+    lowerArm.getWorldPosition(collisionElbowPosition);
+    collisionForearmPosition
+      .copy(collisionElbowPosition)
+      .lerp(collisionHandPosition, 0.52);
+    if (middle) middle.getWorldPosition(collisionFingerPosition);
+    else collisionFingerPosition.copy(collisionHandPosition);
+    collisionPalmPosition
+      .copy(collisionHandPosition)
+      .lerp(collisionFingerPosition, 0.48);
+
+    const handTorsoPush = torsoPenetration(
+      collisionHandPosition,
+      halfWidth + shoulderWidth * 0.12,
+      halfHeight,
+      frontDepth * 1.12 + handRadius,
+    );
+    const forearmTorsoPush = torsoPenetration(
+      collisionForearmPosition,
+      halfWidth * 0.94,
+      halfHeight,
+      frontDepth * 0.92 + forearmRadius,
+    );
+    const palmTorsoPush = torsoPenetration(
+      collisionPalmPosition,
+      halfWidth + shoulderWidth * 0.16,
+      halfHeight,
+      frontDepth * 1.16 + handRadius,
+    );
+    const fingerTorsoPush = torsoPenetration(
+      collisionFingerPosition,
+      halfWidth + shoulderWidth * 0.18,
+      halfHeight,
+      frontDepth * 1.12 + handRadius * 0.72,
+    );
+    const elbowTorsoPush = torsoPenetration(
+      collisionElbowPosition,
+      halfWidth * 0.84,
+      halfHeight * 0.92,
+      frontDepth * 0.82 + forearmRadius,
+    );
+    const handHeadPush = headPenetration(
+      collisionHandPosition,
+      headRadius + handRadius,
+    );
+    const palmHeadPush = headPenetration(
+      collisionPalmPosition,
+      headRadius + handRadius * 0.9,
+    );
+    const fingerHeadPush = headPenetration(
+      collisionFingerPosition,
+      headRadius + handRadius * 0.55,
+    );
+    const forearmHeadPush = headPenetration(
+      collisionForearmPosition,
+      headRadius * 0.9 + forearmRadius,
+    );
+    const handPush = Math.min(
+      shoulderWidth * 0.58,
+      Math.max(
+        handTorsoPush,
+        forearmTorsoPush,
+        palmTorsoPush,
+        fingerTorsoPush,
+        handHeadPush,
+        palmHeadPush,
+        fingerHeadPush,
+        forearmHeadPush,
+      ),
+    );
+    strongestPenetration = Math.max(
+      strongestPenetration,
+      handPush,
+      elbowTorsoPush,
+    );
+
+    if (elbowTorsoPush > shoulderWidth * 0.025) {
+      collisionElbowTarget
+        .copy(collisionElbowPosition)
+        .addScaledVector(
+          collisionForward,
+          Math.min(elbowTorsoPush, shoulderWidth * 0.42),
+        );
+      for (let iteration = 0; iteration < 3; iteration += 1) {
+        solveIkLink(upperArm, lowerArm, collisionElbowTarget, 0.34);
+      }
+      corrections += 1;
+    }
+    if (handPush <= shoulderWidth * 0.018) continue;
+    collisionTarget
+      .copy(collisionHandPosition)
+      .addScaledVector(collisionForward, handPush + shoulderWidth * 0.025);
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      solveIkLink(lowerArm, hand, collisionTarget, 0.46);
+      solveIkLink(upperArm, hand, collisionTarget, 0.34);
+    }
+    hand.parent.updateWorldMatrix(true, false);
+    hand.parent.getWorldQuaternion(ikParentQuaternion).invert();
+    ikDesiredLocalQuaternion
+      .copy(ikParentQuaternion)
+      .multiply(ikDesiredWorldQuaternion);
+    hand.quaternion.slerp(ikDesiredLocalQuaternion, 0.72);
+    corrections += 1;
+  }
+  document.documentElement.dataset.companionCollisionCorrections = String(
+    corrections,
+  );
+  document.documentElement.dataset.companionCollisionProbe = strongestPenetration.toFixed(3);
+}
+
 function updateGaze(delta) {
   if (!state.lookAtTarget || state.settings?.gaze_enabled === false) return;
   const response = 1 - Math.exp(-delta * 4.5);
@@ -1117,6 +1334,7 @@ function renderFrame(now) {
   if (!state.active || !state.vrm) return;
   state.mixer?.update(delta);
   applyWaveIk();
+  applySelfCollisionAvoidance();
   updateGaze(delta);
   updateExpressions(now);
   state.vrm.update(delta);

@@ -126,6 +126,10 @@ configuration system. Removing a character archives its YAML under
 - The motion composer saves two-to-five-step sequences such as greeting → nod →
   bow and can bind the resulting choreography to a semantic trigger. Steps use
   the same custom-VRMA/CC0/fallback priority and transition through the mixer.
+- A model-scaled self-collision pass derives head and torso safety volumes from
+  the active avatar's normalized bones. During mocap and VRMA gestures it checks
+  wrists, palms, fingers, forearms and elbows, then applies a small camera-side
+  IK correction only while a limb penetrates the body; idle poses are untouched.
 - Pointer-aware gaze uses the VRM look-at system and eases back to the camera
   when the pointer leaves the stage.
 - Optional `.vrma` files can be bound to semantic gestures. They cross-fade in,
