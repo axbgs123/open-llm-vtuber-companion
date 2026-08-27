@@ -120,9 +120,12 @@ configuration system. Removing a character archives its YAML under
   motion library: subtle idle, greeting, head nod, rejection, confusion,
   listening, victory and surprise. The playback priority is custom VRMA, then
   CC0 mocap, then quaternion/IK fallback, so normal use avoids synthesized poses.
-- The original narrow procedural stance remains the default idle; mocap takes
-  over only for gestures and then cross-fades back. The avatar itself can be
-  dragged in the chat stage, and its X/Y placement is stored per character.
+- Hikari Archive's loopable MIT-licensed VRMA is the bundled default idle. It
+  uses a restrained upright stance with breathing and head movement; gestures
+  cross-fade back to it, while a character-uploaded idle VRMA still takes
+  priority. The original procedural stance remains the automatic fallback if
+  the asset cannot load. The avatar itself can be dragged in the chat stage,
+  and its X/Y placement is stored per character.
 - The motion composer saves two-to-five-step sequences such as greeting → nod →
   bow and can bind the resulting choreography to a semantic trigger. Steps use
   the same custom-VRMA/CC0/fallback priority and transition through the mixer.

@@ -612,6 +612,40 @@ async function loadBundledMocapActions() {
   }
 }
 
+async function loadBundledIdleAction() {
+  if (!state.vrm || !state.mixer) return;
+  try {
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+    const gltf = await loader.loadAsync(
+      "/companion-assets/motions/hikari-idle.vrma",
+    );
+    const animation = gltf.userData.vrmAnimations?.[0];
+    if (!animation) throw new Error("文件中没有VRMC_vrm_animation数据");
+    const clip = createVRMAnimationClip(animation, state.vrm);
+    clip.name = "Hikari Idle";
+    const action = state.mixer.clipAction(clip);
+    action.enabled = true;
+    action.clampWhenFinished = false;
+    action.zeroSlopeAtStart = true;
+    action.zeroSlopeAtEnd = true;
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    state.mocapActions.set("idle", {
+      action,
+      profile: {
+        loop: true,
+        name: "Hikari Idle",
+        gesture: "idle",
+        source: "bundled-vrma",
+      },
+    });
+    document.documentElement.dataset.companionIdleSource = "hikari-vrma";
+  } catch (error) {
+    document.documentElement.dataset.companionIdleSource = "builtin";
+    console.warn("[Companion VRM] Hikari待机动作加载失败，使用内置站姿", error);
+  }
+}
+
 async function loadModel(modelUrl, animations = []) {
   await ensureRenderer();
   disposeCurrentModel();
@@ -652,6 +686,7 @@ async function loadModel(modelUrl, animations = []) {
   fitCamera();
   applyRendererVisibility(true);
   await loadBundledMocapActions();
+  await loadBundledIdleAction();
   await loadAnimations(animations);
   emitStatus("ready", state.profile?.name || "VRM角色已就绪");
   const query = new URLSearchParams(window.location.search);
@@ -884,7 +919,9 @@ function playVrmaGesture(name, forceOnce = false) {
     action.fadeIn(0.24).play();
   }
   state.activeVrmaAction = action;
-  state.motionSource = group?.length ? "vrma" : mocap ? "mocap" : "builtin";
+  state.motionSource = group?.length
+    ? "vrma"
+    : profile.source || (mocap ? "mocap" : "builtin");
   state.gesture = name;
   state.gestureStartedAt = performance.now();
   state.gestureDuration = Math.max(0.5, action.getClip().duration);

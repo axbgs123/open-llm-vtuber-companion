@@ -24,6 +24,8 @@ test("built-in VRM gestures use quaternion clips and mixer cross-fades", () => {
   assert.match(source, /torsoPenetration/);
   assert.match(source, /headPenetration/);
   assert.match(source, /companionCollisionCorrections/);
+  assert.match(source, /loadBundledIdleAction/);
+  assert.match(source, /hikari-idle\.vrma/);
   assert.doesNotMatch(source, /updateProceduralPose/);
 
   const mocap = "companion_assets/motions/human-addon-animations.glb";
@@ -31,5 +33,10 @@ test("built-in VRM gestures use quaternion clips and mixer cross-fades", () => {
   assert.match(
     fs.readFileSync("companion_assets/motions/MESH2MOTION_LICENSE.md", "utf8"),
     /CC0 1\.0 Universal/,
+  );
+  assert.ok(fs.statSync("companion_assets/motions/hikari-idle.vrma").size > 90_000);
+  assert.match(
+    fs.readFileSync("companion_assets/motions/HIKARI_IDLE_LICENSE.md", "utf8"),
+    /MIT License/,
   );
 });
