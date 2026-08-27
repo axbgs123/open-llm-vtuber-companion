@@ -184,6 +184,9 @@ async function loadModel(modelUrl) {
   state.vrm = vrm;
   vrm.scene.rotation.y = Math.PI;
   state.scene.add(vrm.scene);
+  state.elapsed = 0;
+  updateIdle(0);
+  vrm.update(0);
   fitCamera();
   applyRendererVisibility(true);
   emitStatus("ready", state.profile?.name || "VRM角色已就绪");
@@ -204,7 +207,9 @@ function fitCamera() {
     (size.x * 0.5) /
     Math.tan(THREE.MathUtils.degToRad(state.camera.fov * 0.5)) /
     Math.max(0.3, state.camera.aspect);
-  const distance = Math.max(verticalDistance, horizontalDistance) * framing * scale;
+  const motionMargin = 1.08;
+  const distance =
+    Math.max(verticalDistance, horizontalDistance) * framing * scale * motionMargin;
   const targetY = center.y + (Number(settings.y_offset) || 0) * size.y;
   state.camera.position.set(center.x, targetY, center.z + distance);
   state.camera.lookAt(center.x, targetY, center.z);
@@ -290,15 +295,15 @@ function updateIdle(elapsed) {
   }
   if (hips) hips.position.y = Math.sin(elapsed * 1.25) * 0.004;
   if (leftUpperArm) {
-    leftUpperArm.rotation.z = -1.22 + armLift + Math.sin(elapsed * 0.7) * 0.015;
+    leftUpperArm.rotation.z = 1.22 - armLift + Math.sin(elapsed * 0.7) * 0.015;
     leftUpperArm.rotation.x = -0.08;
   }
   if (rightUpperArm) {
-    rightUpperArm.rotation.z = 1.22 - armLift - Math.sin(elapsed * 0.7) * 0.015;
+    rightUpperArm.rotation.z = -1.22 + armLift - Math.sin(elapsed * 0.7) * 0.015;
     rightUpperArm.rotation.x = -0.08;
   }
-  if (leftLowerArm) leftLowerArm.rotation.z = -0.12;
-  if (rightLowerArm) rightLowerArm.rotation.z = 0.12;
+  if (leftLowerArm) leftLowerArm.rotation.z = 0.12;
+  if (rightLowerArm) rightLowerArm.rotation.z = -0.12;
 }
 
 function renderFrame(now) {

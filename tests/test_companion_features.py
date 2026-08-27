@@ -56,6 +56,7 @@ class CompanionFeatureTests(unittest.TestCase):
         html = '<html><head><script type="module" src="main.js"></script></head></html>'
         injected = inject_companion_lipsync(html)
         self.assertIn("/companion-assets/lip_sync_bridge.js", injected)
+        self.assertIn("/companion-assets/ui_guard.js", injected)
         self.assertIn("/companion-assets/vrm_renderer.mjs", injected)
         self.assertEqual(
             inject_companion_lipsync(injected).count("lip_sync_bridge.js"), 1
