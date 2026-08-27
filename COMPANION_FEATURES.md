@@ -123,9 +123,13 @@ configuration system. Removing a character archives its YAML under
 - Hikari Archive's loopable MIT-licensed VRMA is the bundled default idle. It
   uses a restrained upright stance with breathing and head movement; gestures
   cross-fade back to it, while a character-uploaded idle VRMA still takes
-  priority. Its upper arms keep a small outward clearance angle while an
-  opposite wrist correction keeps the fingers pointing down; this separates
-  sleeve/body clearance from hand orientation across different VRM proportions. The
+  priority. Its arm baseline follows a layered natural-pose chain: relaxed
+  shoulders, roughly vertical upper arms, slightly bent elbows and softly
+  drooped wrists. The VRMA breathing motion remains additive on top, separating
+  sleeve/body clearance from hand orientation across different VRM proportions.
+  The pose design follows the VRM T-pose guidance and the documented
+  `naturalIdle` layering in ruslanmv/3D-Avatar-Chatbot, with shoulder direction
+  and amplitude calibrated on the active normalized VRoid rig. The
   idle pass also maintains model-scaled lateral and camera-side clearance
   between each hand, the coat hem and its nearest thigh, avoiding intersections
   without forcing a visibly wide stance. The original procedural stance remains

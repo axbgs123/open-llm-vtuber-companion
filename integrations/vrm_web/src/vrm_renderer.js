@@ -625,8 +625,8 @@ async function loadBundledIdleAction() {
     const clip = createVRMAnimationClip(animation, state.vrm);
     const idleArmTargets = new Map();
     for (const [boneName, rotationZ] of [
-      ["leftUpperArm", 1.42],
-      ["rightUpperArm", -1.42],
+      ["leftUpperArm", 1.45],
+      ["rightUpperArm", -1.45],
     ]) {
       const node = state.vrm.humanoid?.getNormalizedBoneNode(boneName);
       if (!node) continue;
@@ -1076,10 +1076,22 @@ const idleClosestThighPoint = new THREE.Vector3();
 const idleThighSegment = new THREE.Vector3();
 const idleOutward = new THREE.Vector3();
 const idleClearanceTarget = new THREE.Vector3();
-const idleWristQuaternions = {
-  left: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.1, "XYZ")),
-  right: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.1, "XYZ")),
-};
+// VRM defines relaxed shoulders as the neutral baseline. The 15° elbow bend
+// and 8° wrist droop follow 3D-Avatar-Chatbot's documented naturalIdle chain;
+// shoulder roll is reduced and sign-calibrated for normalized VRoid bones.
+const idleArmRestQuaternions = new Map(
+  [
+    ["leftShoulder", [0, 0, THREE.MathUtils.degToRad(-3.5)]],
+    ["rightShoulder", [0, 0, THREE.MathUtils.degToRad(3.5)]],
+    ["leftLowerArm", [0, THREE.MathUtils.degToRad(-15), 0]],
+    ["rightLowerArm", [0, THREE.MathUtils.degToRad(15), 0]],
+    ["leftHand", [0, 0, THREE.MathUtils.degToRad(8)]],
+    ["rightHand", [0, 0, THREE.MathUtils.degToRad(-8)]],
+  ].map(([boneName, euler]) => [
+    boneName,
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...euler, "XYZ")),
+  ]),
+);
 
 function solveIkLink(link, effector, target, blend) {
   link.updateWorldMatrix(true, true);
@@ -1199,14 +1211,13 @@ function applyWaveIk() {
     .toFixed(3);
 }
 
-function applyIdleWristAlignment() {
+function applyIdleArmRestPose() {
   if (state.gesture !== "idle" || state.motionSource !== "bundled-vrma") return;
   const humanoid = state.vrm?.humanoid;
-  for (const side of ["left", "right"]) {
-    const hand = humanoid?.getNormalizedBoneNode(`${side}Hand`);
-    const target = idleWristQuaternions[side];
-    if (!hand || !target) continue;
-    hand.quaternion.slerp(target, 0.86);
+  for (const [boneName, target] of idleArmRestQuaternions) {
+    const bone = humanoid?.getNormalizedBoneNode(boneName);
+    if (!bone) continue;
+    bone.quaternion.slerp(target, 0.86);
   }
 }
 
@@ -1536,7 +1547,7 @@ function renderFrame(now) {
   if (!state.active || !state.vrm) return;
   state.mixer?.update(delta);
   applyWaveIk();
-  applyIdleWristAlignment();
+  applyIdleArmRestPose();
   applyIdleHandClearance();
   applySelfCollisionAvoidance();
   updateGaze(delta);
