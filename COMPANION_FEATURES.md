@@ -119,6 +119,13 @@ configuration system. Removing a character archives its YAML under
   tag, covering anger, sadness, surprise and joy phrases. Short bundled mocap
   clips are time-scaled to their semantic minimum duration, keeping reactions
   visible without altering uploaded VRMA timing.
+- The semantic-motion classifier groups Chinese synonyms, handles negation and
+  separates intensity levels. Mild satisfaction, happiness and ecstasy share a
+  facial emotion but choose different body motions; ecstasy, rage, farewell and
+  strong gratitude/apology can launch two-step built-in choreography. Fatigue,
+  cold, fear, confusion and calm language expose the corresponding tired,
+  shiver, confused and meditate/listen motion families instead of collapsing
+  everything into the same happy/angry gesture.
 - Built-in gestures are multi-bone quaternion keyframe clips with anticipation,
   action, overshoot and settle phases. A shared Three.js `AnimationMixer`
   cross-fades gestures and VRMA clips into the breathing idle rather than

@@ -6,6 +6,10 @@ import {
   createVRMAnimationClip,
 } from "@pixiv/three-vrm-animation";
 import { WLipSyncEngine, VISEME_NAMES } from "three-vrm-lip-sync";
+import {
+  classifyAssistantMotion,
+  extractInlineEmotion,
+} from "./semantic_motion.js";
 
 const state = {
   active: false,
@@ -72,23 +76,6 @@ const expressionMap = {
   relaxed: "relaxed",
   calm: "relaxed",
   caring: "relaxed",
-};
-
-const emotionGestureMap = {
-  happy: "celebrate",
-  happiness: "celebrate",
-  joy: "celebrate",
-  excited: "celebrate",
-  sad: "shy",
-  sadness: "shy",
-  sorrow: "shy",
-  shy: "shy",
-  angry: "angry",
-  anger: "angry",
-  disgust: "angry",
-  surprise: "surprised",
-  surprised: "surprised",
-  fear: "surprised",
 };
 
 const gestureDurations = {
@@ -221,15 +208,23 @@ function handleMessage(message) {
   }
   if (message?.type === "companion-ai-intent") {
     const expressions = message.actions?.expressions || [];
-    const requested = expressions.find((item) => typeof item === "string");
-    if (requested) setEmotion(requested, 5000);
     const text = String(message.display_text?.text || "");
-    const gesture = chooseSemanticGesture(text, requested || "neutral");
+    const requested =
+      expressions.find((item) => typeof item === "string") ||
+      extractInlineEmotion(text);
+    const motion = chooseSemanticMotion(text, requested || "neutral");
+    if (requested && !motion) setEmotion(requested, 5000);
     state.lastAssistantIntentText = text;
     state.lastAssistantIntentAt = performance.now();
     document.documentElement.dataset.companionAiIntent = text.slice(0, 80);
-    document.documentElement.dataset.companionAiGesture = gesture || "none";
-    const triggered = gesture ? triggerGesture(gesture, text, true) : false;
+    document.documentElement.dataset.companionAiGesture =
+      motion?.gesture || "none";
+    document.documentElement.dataset.companionAiMotionReason =
+      motion?.reason || "none";
+    document.documentElement.dataset.companionAiMotionIntensity = String(
+      motion?.intensity || 0,
+    );
+    const triggered = triggerSemanticMotion(motion, text);
     document.documentElement.dataset.companionAiGestureTriggered = String(
       triggered,
     );
@@ -237,16 +232,16 @@ function handleMessage(message) {
   }
   if (message?.type === "audio") {
     const expressions = message.actions?.expressions || [];
-    const requested = expressions.find((item) => typeof item === "string");
-    if (requested) setEmotion(requested, 5000);
     const text = String(message.display_text?.text || "");
-    const gesture = chooseSemanticGesture(text, requested || "neutral");
-    const explicitGesture =
-      Boolean(requested) || ["wave", "nod", "shake", "think"].includes(gesture);
+    const requested =
+      expressions.find((item) => typeof item === "string") ||
+      extractInlineEmotion(text);
+    const motion = chooseSemanticMotion(text, requested || "neutral");
+    if (requested && !motion) setEmotion(requested, 5000);
     const repeatsIntent =
       text === state.lastAssistantIntentText &&
       performance.now() - state.lastAssistantIntentAt < 15000;
-    if (gesture && !repeatsIntent) triggerGesture(gesture, text, explicitGesture);
+    if (motion && !repeatsIntent) triggerSemanticMotion(motion, text);
   }
 }
 
@@ -954,43 +949,10 @@ function hashRatio(text) {
   return (hash >>> 0) / 4294967295;
 }
 
-function chooseSemanticGesture(text, emotion) {
+function chooseSemanticMotion(text, emotion) {
+  const classified = classifyAssistantMotion(text, emotion);
+  if (classified) return { ...classified, explicit: true };
   const clean = String(text || "").trim();
-  const loweredEmotion = String(emotion || "").toLowerCase();
-  if (
-    /(你好|嗨|哈喽|再见|拜拜|早上好|晚上好|很高兴见到你|见到你真好|欢迎|好久不见|又见面)/.test(
-      clean,
-    )
-  ) return "wave";
-  if (
-    /(谢谢|多谢|没错|当然|好的|好呀|可以|答应你|没问题|我同意|说得对|确实|明白|知道了|交给我|放心)/.test(
-      clean,
-    )
-  ) return "nod";
-  if (
-    /(不行|不是|不要|不能|并不是|别这样|不可以|办不到|我拒绝|我不同意|别想|休想|没门)/.test(
-      clean,
-    )
-  ) return "shake";
-  if (
-    /(让我想想|我想想|想一想|我觉得|或许|可能|思考一下|分析一下|考虑一下|得想想|需要分析)/.test(
-      clean,
-    )
-  ) return "think";
-  if (
-    /(生气|烦人|别烦|滚开|滚吧|去你的|去死|讨厌|闭嘴|混蛋|可恶|气死|挑衅|惹我|不耐烦)/.test(
-      clean,
-    )
-  ) return "angry";
-  if (/(难过|伤心|难受|失落|沮丧|想哭|委屈)/.test(clean)) return "shy";
-  if (/(居然|竟然|真的吗|没想到|天哪|吓一跳|太意外)/.test(clean)) {
-    return "surprised";
-  }
-  if (/(哈哈|开心|太好了|真棒|太棒|喜欢|高兴)/.test(clean)) {
-    return "celebrate";
-  }
-  const emotional = emotionGestureMap[loweredEmotion];
-  if (emotional) return emotional;
   const settings = state.settings || {};
   const styleFactor = settings.action_style === "subtle" ? 0.72 : settings.action_style === "expressive" ? 1.18 : 1;
   const frequency = THREE.MathUtils.clamp(
@@ -998,8 +960,21 @@ function chooseSemanticGesture(text, emotion) {
     0,
     1,
   );
-  if (clean.length >= 18 && hashRatio(clean) <= frequency) return "emphasize";
+  if (clean.length >= 18 && hashRatio(clean) <= frequency) {
+    return {
+      reason: "speech-emphasis",
+      emotion: "neutral",
+      intensity: 1,
+      gesture: "emphasize",
+      sequence: null,
+      explicit: false,
+    };
+  }
   return null;
+}
+
+function chooseSemanticGesture(text, emotion) {
+  return chooseSemanticMotion(text, emotion)?.gesture || null;
 }
 
 function playVrmaGesture(name, forceOnce = false) {
@@ -1067,6 +1042,43 @@ function startMotionCombo(combo) {
   state.comboQueue = combo.steps.slice(0, 5);
   document.documentElement.dataset.companionMotionCombo = combo.name || combo.id;
   return playNextComboStep();
+}
+
+function triggerSemanticMotion(motion, sourceText = "") {
+  if (!motion?.gesture || !state.active) return false;
+  if (motion.gesture === state.lastGesture && motion.gestures?.length > 1) {
+    const currentIndex = motion.gestures.indexOf(motion.gesture);
+    motion = {
+      ...motion,
+      gesture: motion.gestures[(currentIndex + 1) % motion.gestures.length],
+    };
+  }
+  const totalDuration = (motion.sequence || [motion.gesture]).reduce(
+    (sum, gesture) => sum + (gestureDurations[gesture] || 1.5),
+    0,
+  );
+  if (motion.emotion && motion.emotion !== "neutral") {
+    setEmotion(motion.emotion, Math.max(2500, totalDuration * 1000));
+  }
+  document.documentElement.dataset.companionSemanticSequence =
+    motion.sequence?.join(",") || motion.gesture;
+  if (motion.sequence?.length >= 2) {
+    const now = performance.now();
+    if (now < state.gestureCooldownUntil) return false;
+    state.lastGesture = `semantic:${motion.reason}`;
+    state.gestureCooldownUntil = now + 1250;
+    return startMotionCombo({
+      id: `semantic:${motion.reason}`,
+      name: `语义动作：${motion.reason}`,
+      enabled: true,
+      steps: motion.sequence,
+    });
+  }
+  return triggerGesture(
+    motion.gesture,
+    sourceText,
+    motion.explicit !== false,
+  );
 }
 
 function triggerGesture(name, sourceText = "", force = false) {
@@ -1689,6 +1701,7 @@ window.CompanionVRM = {
   setEmotion,
   triggerGesture,
   chooseSemanticGesture,
+  chooseSemanticMotion,
   fitCamera,
   useLive2D() {
     applyRendererVisibility(false);

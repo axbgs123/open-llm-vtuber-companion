@@ -31,9 +31,10 @@ test("built-in VRM gestures use quaternion clips and mixer cross-fades", () => {
   assert.match(source, /companionIdleHandCorrections/);
   assert.match(source, /applyIdleArmRestPose/);
   assert.match(source, /idleArmRestQuaternions/);
-  assert.match(source, /很高兴见到你/);
-  assert.match(source, /去你的/);
-  assert.match(source, /anger: "angry"/);
+  assert.match(source, /classifyAssistantMotion/);
+  assert.match(source, /triggerSemanticMotion/);
+  assert.match(source, /companionSemanticSequence/);
+  assert.match(source, /motion\.gestures/);
   assert.match(source, /companion-ai-intent/);
   assert.match(source, /companionAiGesture/);
   assert.match(source, /companionAiGestureTriggered/);
