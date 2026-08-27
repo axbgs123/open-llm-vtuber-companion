@@ -625,8 +625,8 @@ async function loadBundledIdleAction() {
     const clip = createVRMAnimationClip(animation, state.vrm);
     const idleArmTargets = new Map();
     for (const [boneName, rotationZ] of [
-      ["leftUpperArm", 1.52],
-      ["rightUpperArm", -1.52],
+      ["leftUpperArm", 1.42],
+      ["rightUpperArm", -1.42],
     ]) {
       const node = state.vrm.humanoid?.getNormalizedBoneNode(boneName);
       if (!node) continue;
@@ -1076,6 +1076,10 @@ const idleClosestThighPoint = new THREE.Vector3();
 const idleThighSegment = new THREE.Vector3();
 const idleOutward = new THREE.Vector3();
 const idleClearanceTarget = new THREE.Vector3();
+const idleWristQuaternions = {
+  left: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.1, "XYZ")),
+  right: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.1, "XYZ")),
+};
 
 function solveIkLink(link, effector, target, blend) {
   link.updateWorldMatrix(true, true);
@@ -1195,6 +1199,17 @@ function applyWaveIk() {
     .toFixed(3);
 }
 
+function applyIdleWristAlignment() {
+  if (state.gesture !== "idle" || state.motionSource !== "bundled-vrma") return;
+  const humanoid = state.vrm?.humanoid;
+  for (const side of ["left", "right"]) {
+    const hand = humanoid?.getNormalizedBoneNode(`${side}Hand`);
+    const target = idleWristQuaternions[side];
+    if (!hand || !target) continue;
+    hand.quaternion.slerp(target, 0.86);
+  }
+}
+
 function applyIdleHandClearance() {
   if (
     state.gesture !== "idle" ||
@@ -1206,8 +1221,12 @@ function applyIdleHandClearance() {
   }
   const humanoid = state.vrm?.humanoid;
   const hips = humanoid?.getNormalizedBoneNode("hips");
-  const leftShoulder = humanoid?.getNormalizedBoneNode("leftShoulder");
-  const rightShoulder = humanoid?.getNormalizedBoneNode("rightShoulder");
+  const leftShoulder =
+    humanoid?.getNormalizedBoneNode("leftUpperArm") ||
+    humanoid?.getNormalizedBoneNode("leftShoulder");
+  const rightShoulder =
+    humanoid?.getNormalizedBoneNode("rightUpperArm") ||
+    humanoid?.getNormalizedBoneNode("rightShoulder");
   const leftUpperLeg = humanoid?.getNormalizedBoneNode("leftUpperLeg");
   const rightUpperLeg = humanoid?.getNormalizedBoneNode("rightUpperLeg");
   if (!hips || !leftShoulder || !rightShoulder || !leftUpperLeg || !rightUpperLeg) {
@@ -1223,8 +1242,8 @@ function applyIdleHandClearance() {
   state.camera.getWorldDirection(collisionCameraForward).multiplyScalar(-1).normalize();
   const shoulderWidth = collisionLeftShoulder.distanceTo(collisionRightShoulder);
   const hipWidth = collisionPalmPosition.distanceTo(collisionFingerPosition);
-  const minimumSideDistance = hipWidth * 0.5 + shoulderWidth * 0.28;
-  const minimumFrontDistance = shoulderWidth * 0.12;
+  const minimumSideDistance = hipWidth * 0.5 + shoulderWidth * 0.14;
+  const minimumFrontDistance = shoulderWidth * 0.065;
   let corrections = 0;
   const clearanceSamples = [];
 
@@ -1336,8 +1355,12 @@ function applySelfCollisionAvoidance() {
     humanoid?.getNormalizedBoneNode("chest");
   const neck = humanoid?.getNormalizedBoneNode("neck");
   const head = humanoid?.getNormalizedBoneNode("head");
-  const leftShoulder = humanoid?.getNormalizedBoneNode("leftShoulder");
-  const rightShoulder = humanoid?.getNormalizedBoneNode("rightShoulder");
+  const leftShoulder =
+    humanoid?.getNormalizedBoneNode("leftUpperArm") ||
+    humanoid?.getNormalizedBoneNode("leftShoulder");
+  const rightShoulder =
+    humanoid?.getNormalizedBoneNode("rightUpperArm") ||
+    humanoid?.getNormalizedBoneNode("rightShoulder");
   if (!hips || !chest || !neck || !head || !leftShoulder || !rightShoulder) return;
 
   state.vrm.scene.updateMatrixWorld(true);
@@ -1513,6 +1536,7 @@ function renderFrame(now) {
   if (!state.active || !state.vrm) return;
   state.mixer?.update(delta);
   applyWaveIk();
+  applyIdleWristAlignment();
   applyIdleHandClearance();
   applySelfCollisionAvoidance();
   updateGaze(delta);
