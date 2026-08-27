@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import {
+  VRMAnimationLoaderPlugin,
+  createVRMAnimationClip,
+} from "@pixiv/three-vrm-animation";
 import { WLipSyncEngine, VISEME_NAMES } from "three-vrm-lip-sync";
 
 const state = {
@@ -22,6 +26,19 @@ const state = {
   audioNodes: new WeakMap(),
   emotion: "neutral",
   emotionUntil: 0,
+  speaking: false,
+  gesture: "idle",
+  gestureStartedAt: 0,
+  gestureDuration: 0,
+  gestureCooldownUntil: 0,
+  lastGesture: "",
+  mixer: null,
+  vrmaActions: new Map(),
+  activeVrmaAction: null,
+  gaze: { x: 0, y: 0, targetX: 0, targetY: 0 },
+  lookAtTarget: null,
+  lookAtBase: new THREE.Vector3(0, 1.5, 1),
+  host: null,
   lastError: "",
 };
 
@@ -44,6 +61,30 @@ const expressionMap = {
   caring: "relaxed",
 };
 
+const emotionGestureMap = {
+  happy: "celebrate",
+  joy: "celebrate",
+  excited: "celebrate",
+  sad: "shy",
+  sorrow: "shy",
+  shy: "shy",
+  angry: "emphasize",
+  surprise: "surprised",
+  surprised: "surprised",
+};
+
+const gestureDurations = {
+  wave: 2.4,
+  nod: 1.45,
+  shake: 1.55,
+  think: 2.8,
+  shy: 2.5,
+  emphasize: 1.7,
+  celebrate: 2.2,
+  surprised: 1.4,
+  idle: 0,
+};
+
 function emitStatus(status, detail = "") {
   document.documentElement.dataset.companionRenderer = state.active ? "vrm" : "live2d";
   document.documentElement.dataset.companionVrmStatus = status;
@@ -52,6 +93,13 @@ function emitStatus(status, detail = "") {
     new CustomEvent("companion-vrm-status", {
       detail: { status, detail, active: state.active, confUid: state.confUid },
     }),
+  );
+}
+
+function emitGesture(name, source = "procedural") {
+  document.documentElement.dataset.companionGesture = name;
+  window.dispatchEvent(
+    new CustomEvent("companion-vrm-gesture", { detail: { name, source } }),
   );
 }
 
@@ -78,10 +126,13 @@ function handleMessage(message) {
     void selectCharacter(String(message.conf_uid));
     return;
   }
-  if (message?.type === "audio" && message.actions) {
-    const expressions = message.actions.expressions || [];
+  if (message?.type === "audio") {
+    const expressions = message.actions?.expressions || [];
     const requested = expressions.find((item) => typeof item === "string");
     if (requested) setEmotion(requested, 5000);
+    const text = String(message.display_text?.text || "");
+    const gesture = chooseSemanticGesture(text, requested || "neutral");
+    if (gesture) triggerGesture(gesture, text);
   }
 }
 
@@ -110,6 +161,31 @@ async function ensureRenderer() {
   const host = state.live2dCanvas.parentElement;
   if (!host) throw new Error("Live2D canvas has no container");
   if (getComputedStyle(host).position === "static") host.style.position = "relative";
+  state.host = host;
+  host.addEventListener("pointermove", (event) => {
+    const rect = host.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    state.gaze.targetX = THREE.MathUtils.clamp(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -1,
+      1,
+    );
+    state.gaze.targetY = THREE.MathUtils.clamp(
+      ((event.clientY - rect.top) / rect.height) * 2 - 1,
+      -1,
+      1,
+    );
+  });
+  host.addEventListener("pointerleave", () => {
+    state.gaze.targetX = 0;
+    state.gaze.targetY = 0;
+  });
+  window.addEventListener("companion-speech-start", () => {
+    state.speaking = true;
+  });
+  window.addEventListener("companion-speech-end", () => {
+    state.speaking = false;
+  });
 
   const canvas = document.createElement("canvas");
   canvas.id = "companion-vrm-canvas";
@@ -138,12 +214,16 @@ async function ensureRenderer() {
   const fill = new THREE.DirectionalLight(0x9ab7ff, 1.1);
   fill.position.set(2.5, 1.4, -1);
   scene.add(fill);
+  const lookAtTarget = new THREE.Object3D();
+  lookAtTarget.name = "CompanionLookAtTarget";
+  scene.add(lookAtTarget);
 
   const camera = new THREE.PerspectiveCamera(28, 1, 0.01, 100);
   state.canvas = canvas;
   state.renderer = renderer;
   state.scene = scene;
   state.camera = camera;
+  state.lookAtTarget = lookAtTarget;
 
   const resize = () => {
     const rect = host.getBoundingClientRect();
@@ -168,9 +248,13 @@ function disposeCurrentModel() {
   state.lipEngine = null;
   state.audioContext?.close().catch(() => {});
   state.audioContext = null;
+  state.mixer?.stopAllAction();
+  state.mixer = null;
+  state.vrmaActions.clear();
+  state.activeVrmaAction = null;
 }
 
-async function loadModel(modelUrl) {
+async function loadModel(modelUrl, animations = []) {
   await ensureRenderer();
   disposeCurrentModel();
   emitStatus("loading", "正在加载VRM角色");
@@ -182,14 +266,62 @@ async function loadModel(modelUrl) {
   VRMUtils.removeUnnecessaryVertices(gltf.scene);
   VRMUtils.combineSkeletons(gltf.scene);
   state.vrm = vrm;
+  if (vrm.lookAt && state.settings?.gaze_enabled !== false) {
+    vrm.lookAt.target = state.lookAtTarget;
+  }
+  state.mixer = new THREE.AnimationMixer(vrm.scene);
+  state.mixer.addEventListener("finished", (event) => {
+    if (event.action !== state.activeVrmaAction) return;
+    state.activeVrmaAction?.fadeOut(0.2);
+    state.activeVrmaAction = null;
+    state.gesture = "idle";
+    emitGesture("idle", "vrma");
+    playVrmaGesture("idle");
+  });
   vrm.scene.rotation.y = Math.PI;
   state.scene.add(vrm.scene);
   state.elapsed = 0;
-  updateIdle(0);
+  updateProceduralPose(0, performance.now());
   vrm.update(0);
   fitCamera();
   applyRendererVisibility(true);
+  await loadAnimations(animations);
   emitStatus("ready", state.profile?.name || "VRM角色已就绪");
+  const previewGesture = new URLSearchParams(window.location.search).get("gesture");
+  if (gestureDurations[previewGesture]) {
+    setTimeout(() => triggerGesture(previewGesture, "preview", true), 350);
+  }
+}
+
+async function loadAnimations(profiles) {
+  state.vrmaActions.clear();
+  if (!state.vrm || !state.mixer) return;
+  for (const profile of profiles || []) {
+    if (!profile?.url || profile.enabled === false) continue;
+    try {
+      const loader = new GLTFLoader();
+      loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+      const gltf = await loader.loadAsync(profile.url);
+      const vrmAnimation = gltf.userData.vrmAnimations?.[0];
+      if (!vrmAnimation) throw new Error("文件中没有VRMC_vrm_animation数据");
+      const clip = createVRMAnimationClip(vrmAnimation, state.vrm);
+      clip.name = profile.name || profile.gesture || "VRMA";
+      const action = state.mixer.clipAction(clip);
+      action.enabled = true;
+      action.clampWhenFinished = !profile.loop;
+      action.setLoop(profile.loop ? THREE.LoopRepeat : THREE.LoopOnce, profile.loop ? Infinity : 1);
+      const gesture = String(profile.gesture || "emphasize");
+      const group = state.vrmaActions.get(gesture) || [];
+      group.push({ action, profile });
+      state.vrmaActions.set(gesture, group);
+    } catch (error) {
+      console.warn(`[Companion VRM] VRMA加载失败：${profile.name || profile.id}`, error);
+    }
+  }
+  document.documentElement.dataset.companionVrmaCount = String(
+    [...state.vrmaActions.values()].reduce((total, group) => total + group.length, 0),
+  );
+  playVrmaGesture("idle");
 }
 
 function fitCamera() {
@@ -216,6 +348,8 @@ function fitCamera() {
   state.camera.near = Math.max(0.01, distance / 100);
   state.camera.far = Math.max(20, distance * 10);
   state.camera.updateProjectionMatrix();
+  state.lookAtBase.set(center.x, targetY, center.z + Math.max(0.8, distance * 0.35));
+  state.lookAtTarget?.position.copy(state.lookAtBase);
   document.documentElement.dataset.companionVrmBounds = [size.x, size.y, size.z]
     .map((value) => value.toFixed(2))
     .join("×");
@@ -241,7 +375,7 @@ async function selectCharacter(confUid) {
       emitStatus("live2d", "使用Live2D渲染");
       return;
     }
-    await loadModel(data.model_url);
+    await loadModel(data.model_url, data.animations || []);
   } catch (error) {
     state.lastError = String(error?.message || error);
     applyRendererVisibility(false);
@@ -254,6 +388,80 @@ function setEmotion(name, durationMs = 4000) {
   const mapped = expressionMap[String(name).toLowerCase()] || "neutral";
   state.emotion = mapped;
   state.emotionUntil = performance.now() + durationMs;
+}
+
+function hashRatio(text) {
+  let hash = 2166136261;
+  for (const char of String(text)) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
+}
+
+function chooseSemanticGesture(text, emotion) {
+  const clean = String(text || "").trim();
+  const loweredEmotion = String(emotion || "").toLowerCase();
+  if (/(你好|嗨|哈喽|再见|拜拜|早上好|晚上好)/.test(clean)) return "wave";
+  if (/(谢谢|多谢|没错|当然|好的|好呀|可以|答应你)/.test(clean)) return "nod";
+  if (/(不行|不是|不要|不能|并不是|别这样)/.test(clean)) return "shake";
+  if (/(让我想想|想一想|我觉得|或许|可能|思考一下)/.test(clean)) return "think";
+  const emotional = emotionGestureMap[loweredEmotion];
+  if (emotional) return emotional;
+  const settings = state.settings || {};
+  const styleFactor = settings.action_style === "subtle" ? 0.72 : settings.action_style === "expressive" ? 1.18 : 1;
+  const frequency = THREE.MathUtils.clamp(
+    (Number(settings.gesture_frequency) || 0) * styleFactor,
+    0,
+    1,
+  );
+  if (clean.length >= 18 && hashRatio(clean) <= frequency) return "emphasize";
+  return null;
+}
+
+function playVrmaGesture(name) {
+  const group = state.vrmaActions.get(name);
+  if (!group?.length || !state.mixer) return false;
+  const index = Math.abs(Math.floor(state.elapsed * 10)) % group.length;
+  const { action, profile } = group[index];
+  if (state.activeVrmaAction && state.activeVrmaAction !== action) {
+    state.activeVrmaAction.fadeOut(0.18);
+  }
+  action.reset();
+  action.enabled = true;
+  action.clampWhenFinished = !profile.loop;
+  action.setLoop(profile.loop ? THREE.LoopRepeat : THREE.LoopOnce, profile.loop ? Infinity : 1);
+  action.fadeIn(0.2).play();
+  state.activeVrmaAction = action;
+  state.gesture = name;
+  state.gestureStartedAt = performance.now();
+  state.gestureDuration = Math.max(0.5, action.getClip().duration);
+  emitGesture(name, "vrma");
+  return true;
+}
+
+function triggerGesture(name, sourceText = "", force = false) {
+  if (!gestureDurations[name] || !state.active) return false;
+  const now = performance.now();
+  if (now < state.gestureCooldownUntil) return false;
+  if (state.lastGesture === name && now - state.gestureStartedAt < 5000) return false;
+  const settings = state.settings || {};
+  const frequency = THREE.MathUtils.clamp(Number(settings.gesture_frequency) || 0, 0, 1);
+  if (!force && frequency <= 0) return false;
+  const strongGesture = ["wave", "nod", "shake", "celebrate", "surprised"].includes(name);
+  if (!force && !strongGesture && hashRatio(`${sourceText}:${name}`) > frequency) return false;
+  state.lastGesture = name;
+  state.gestureCooldownUntil = now + 1250;
+  if (playVrmaGesture(name)) return true;
+  if (state.activeVrmaAction) {
+    state.activeVrmaAction.fadeOut(0.18);
+    state.activeVrmaAction = null;
+  }
+  state.gesture = name;
+  state.gestureStartedAt = now;
+  state.gestureDuration = gestureDurations[name];
+  emitGesture(name, "procedural");
+  return true;
 }
 
 function updateExpressions(now) {
@@ -272,7 +480,7 @@ function updateExpressions(now) {
   }
 }
 
-function updateIdle(elapsed) {
+function updateProceduralPose(elapsed, now) {
   if (!state.vrm) return;
   const head = state.vrm.humanoid?.getNormalizedBoneNode("head");
   const chest = state.vrm.humanoid?.getNormalizedBoneNode("chest");
@@ -285,6 +493,26 @@ function updateIdle(elapsed) {
   const pulse = Math.sin(elapsed * 4.2);
   const armLift = expressive === "happy" ? 0.16 + pulse * 0.035 : 0;
   const guarded = expressive === "sad" ? 0.1 : 0;
+  const settings = state.settings || {};
+  const styleFactor = settings.action_style === "subtle" ? 0.72 : settings.action_style === "expressive" ? 1.2 : 1;
+  const intensity = THREE.MathUtils.clamp(
+    (Number(settings.gesture_intensity) || 0) * styleFactor,
+    0,
+    1.25,
+  );
+  let gesturePhase = 0;
+  let gestureEnvelope = 0;
+  if (state.gesture !== "idle" && state.gestureDuration > 0) {
+    gesturePhase = (now - state.gestureStartedAt) / (state.gestureDuration * 1000);
+    if (gesturePhase >= 1) {
+      state.gesture = "idle";
+      state.gestureDuration = 0;
+      emitGesture("idle");
+      gesturePhase = 0;
+    } else {
+      gestureEnvelope = Math.sin(Math.PI * THREE.MathUtils.clamp(gesturePhase, 0, 1));
+    }
+  }
   if (head) {
     head.rotation.y = Math.sin(elapsed * 0.37) * 0.035;
     head.rotation.z = Math.sin(elapsed * 0.23) * 0.018 + (expressive === "sad" ? 0.07 : 0);
@@ -304,6 +532,71 @@ function updateIdle(elapsed) {
   }
   if (leftLowerArm) leftLowerArm.rotation.z = 0.12;
   if (rightLowerArm) rightLowerArm.rotation.z = -0.12;
+
+  const amount = gestureEnvelope * intensity;
+  switch (state.gesture) {
+    case "wave":
+      if (rightUpperArm) {
+        rightUpperArm.rotation.z += 1.28 * amount;
+        rightUpperArm.rotation.x -= 0.22 * amount;
+      }
+      if (rightLowerArm) {
+        rightLowerArm.rotation.z += 1.5 * amount;
+        rightLowerArm.rotation.x = Math.sin(gesturePhase * Math.PI * 8) * 0.22 * amount;
+      }
+      break;
+    case "nod":
+      if (head) head.rotation.x += Math.sin(gesturePhase * Math.PI * 4) * 0.14 * amount;
+      break;
+    case "shake":
+      if (head) head.rotation.y += Math.sin(gesturePhase * Math.PI * 4) * 0.18 * amount;
+      break;
+    case "think":
+      if (head) {
+        head.rotation.z += 0.11 * amount;
+        head.rotation.y -= 0.1 * amount;
+        head.rotation.x += 0.035 * amount;
+      }
+      if (rightUpperArm) rightUpperArm.rotation.z += 0.12 * amount;
+      if (rightLowerArm) rightLowerArm.rotation.z += 0.1 * amount;
+      if (chest) chest.rotation.y = -0.025 * amount;
+      break;
+    case "shy":
+      if (head) head.rotation.x += 0.1 * amount;
+      if (leftUpperArm) leftUpperArm.rotation.z -= 0.15 * amount;
+      if (rightUpperArm) rightUpperArm.rotation.z += 0.15 * amount;
+      if (chest) chest.rotation.x += 0.06 * amount;
+      break;
+    case "celebrate":
+      if (leftUpperArm) leftUpperArm.rotation.z -= 0.62 * amount;
+      if (rightUpperArm) rightUpperArm.rotation.z += 0.62 * amount;
+      if (chest) chest.rotation.x -= 0.035 * amount;
+      break;
+    case "surprised":
+      if (leftUpperArm) leftUpperArm.rotation.z -= 0.26 * amount;
+      if (rightUpperArm) rightUpperArm.rotation.z += 0.26 * amount;
+      if (head) head.rotation.x -= 0.06 * amount;
+      break;
+    case "emphasize": {
+      const beat = (0.5 + 0.5 * Math.sin(gesturePhase * Math.PI * 4)) * amount;
+      if (rightUpperArm) rightUpperArm.rotation.z += 0.42 * beat;
+      if (rightLowerArm) rightLowerArm.rotation.z += 0.3 * beat;
+      if (chest) chest.rotation.y = -0.035 * beat;
+      break;
+    }
+  }
+}
+
+function updateGaze(delta) {
+  if (!state.lookAtTarget || state.settings?.gaze_enabled === false) return;
+  const response = 1 - Math.exp(-delta * 4.5);
+  state.gaze.x += (state.gaze.targetX - state.gaze.x) * response;
+  state.gaze.y += (state.gaze.targetY - state.gaze.y) * response;
+  state.lookAtTarget.position.set(
+    state.lookAtBase.x + state.gaze.x * 0.55,
+    state.lookAtBase.y - state.gaze.y * 0.32,
+    state.lookAtBase.z,
+  );
 }
 
 function renderFrame(now) {
@@ -312,7 +605,9 @@ function renderFrame(now) {
   state.lastFrame = now;
   state.elapsed += delta;
   if (!state.active || !state.vrm) return;
-  updateIdle(state.elapsed);
+  state.mixer?.update(delta);
+  if (!state.activeVrmaAction) updateProceduralPose(state.elapsed, now);
+  updateGaze(delta);
   updateExpressions(now);
   state.vrm.update(delta);
   state.renderer.render(state.scene, state.camera);
@@ -358,6 +653,8 @@ window.CompanionVRM = {
   state,
   selectCharacter,
   setEmotion,
+  triggerGesture,
+  chooseSemanticGesture,
   fitCamera,
   useLive2D() {
     applyRendererVisibility(false);

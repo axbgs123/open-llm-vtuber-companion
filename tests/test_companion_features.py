@@ -78,20 +78,45 @@ class CompanionFeatureTests(unittest.TestCase):
                 "scale": 99,
                 "camera_distance": 0,
                 "y_offset": -9,
+                "action_style": "wild",
+                "gesture_intensity": 8,
+                "gesture_frequency": -2,
+                "gaze_enabled": False,
             }
             state["vrm_models"]["alice"] = [{"id": "model1", "name": "Alice 3D"}]
+            state["vrm_animations"]["alice"] = [
+                {"id": "motion1", "name": "Wave", "gesture": "wave"}
+            ]
             companion_routes._save_state(state)
             settings = companion_routes.get_avatar_settings("alice")
             self.assertEqual(settings["renderer"], "vrm")
             self.assertEqual(settings["scale"], 3.0)
             self.assertEqual(settings["camera_distance"], 0.6)
             self.assertEqual(settings["y_offset"], -2.0)
+            self.assertEqual(settings["action_style"], "natural")
+            self.assertEqual(settings["gesture_intensity"], 1.0)
+            self.assertEqual(settings["gesture_frequency"], 0.0)
+            self.assertFalse(settings["gaze_enabled"])
             self.assertEqual(
                 companion_routes.get_avatar_settings("bob")["renderer"], "live2d"
             )
             self.assertEqual(
                 companion_routes.get_vrm_profiles("alice")[0]["name"], "Alice 3D"
             )
+            self.assertEqual(
+                companion_routes.get_vrma_profiles("alice")[0]["gesture"], "wave"
+            )
+
+    def test_character_backup_includes_vrma_files(self):
+        root = self.root / "motion-backup"
+        motion_dir = root / "companion_data" / "vrm_animations" / "alice"
+        motion_dir.mkdir(parents=True)
+        motion = motion_dir / "wave.vrma"
+        motion.write_bytes(b"glTF-motion")
+        (root / "characters").mkdir()
+        (root / "chat_history").mkdir()
+        with patch.object(backup_manager, "ROOT", root):
+            self.assertIn(motion, backup_manager._character_files("alice"))
 
     def test_lipsync_settings_are_bounded(self):
         data_dir = self.root / "companion_data"

@@ -43,6 +43,7 @@ CHARACTERS_DIR = ROOT / "characters"
 DATA_DIR = ROOT / "companion_data"
 VOICE_DIR = DATA_DIR / "voice_references"
 VRM_DIR = DATA_DIR / "vrm_models"
+VRMA_DIR = DATA_DIR / "vrm_animations"
 STATE_PATH = DATA_DIR / "state.json"
 PROACTIVE_PROMPT_PATH = ROOT / "prompts" / "utils" / "proactive_speak_prompt.txt"
 
@@ -79,6 +80,21 @@ DEFAULT_AVATAR = {
     "scale": 1.0,
     "camera_distance": 1.15,
     "y_offset": 0.0,
+    "action_style": "natural",
+    "gesture_intensity": 0.75,
+    "gesture_frequency": 0.65,
+    "gaze_enabled": True,
+}
+VRMA_GESTURES = {
+    "wave",
+    "nod",
+    "shake",
+    "think",
+    "shy",
+    "emphasize",
+    "celebrate",
+    "surprised",
+    "idle",
 }
 
 _yaml = YAML()
@@ -94,6 +110,7 @@ def _default_state() -> dict[str, Any]:
         "lipsync": dict(DEFAULT_LIPSYNC),
         "avatars": {},
         "vrm_models": {},
+        "vrm_animations": {},
     }
 
 
@@ -278,12 +295,30 @@ def get_avatar_settings(conf_uid: str) -> dict[str, Any]:
     )
     settings["y_offset"] = max(-2.0, min(2.0, float(settings.get("y_offset", 0.0))))
     settings["active_vrm"] = str(settings.get("active_vrm") or "")
+    settings["action_style"] = (
+        str(settings.get("action_style") or "natural")
+        if settings.get("action_style") in {"subtle", "natural", "expressive"}
+        else "natural"
+    )
+    settings["gesture_intensity"] = max(
+        0.0, min(1.0, float(settings.get("gesture_intensity", 0.75)))
+    )
+    settings["gesture_frequency"] = max(
+        0.0, min(1.0, float(settings.get("gesture_frequency", 0.65)))
+    )
+    settings["gaze_enabled"] = bool(settings.get("gaze_enabled", True))
     return settings
 
 
 def get_vrm_profiles(conf_uid: str) -> list[dict[str, Any]]:
     state = _load_state()
     profiles = state.get("vrm_models", {}).get(str(conf_uid), [])
+    return [profile for profile in profiles if isinstance(profile, dict)]
+
+
+def get_vrma_profiles(conf_uid: str) -> list[dict[str, Any]]:
+    state = _load_state()
+    profiles = state.get("vrm_animations", {}).get(str(conf_uid), [])
     return [profile for profile in profiles if isinstance(profile, dict)]
 
 
@@ -465,6 +500,16 @@ def init_companion_routes() -> APIRouter:
             "settings": settings,
             "profiles": profiles,
             "active": active,
+            "animations": [
+                {
+                    **profile,
+                    "url": (
+                        f"/api/companion/avatar/{conf_uid}/animations/"
+                        f"{profile.get('id', '')}/file"
+                    ),
+                }
+                for profile in get_vrma_profiles(conf_uid)
+            ],
             "model_url": (
                 f"/api/companion/avatar/{conf_uid}/{settings['active_vrm']}/file"
                 if active
@@ -581,6 +626,122 @@ def init_companion_routes() -> APIRouter:
         if avatar.get("active_vrm") == model_id:
             avatar.update({"active_vrm": "", "renderer": "live2d"})
             state.setdefault("avatars", {})[conf_uid] = avatar
+        _save_state(state)
+        return {"ok": True}
+
+    @router.post("/api/companion/avatar/{conf_uid}/animations")
+    async def upload_vrma_animation(
+        conf_uid: str,
+        request: Request,
+        animation: UploadFile = File(...),
+        name: str = Form("角色动作"),
+        gesture: str = Form("emphasize"),
+        loop: bool = Form(False),
+        license_note: str = Form("仅限本机使用"),
+    ):
+        if forbidden := _local_only(request):
+            return forbidden
+        gesture = str(gesture).strip().lower()
+        if gesture not in VRMA_GESTURES:
+            return JSONResponse(
+                {"ok": False, "error": "unsupported gesture"}, status_code=400
+            )
+        raw = await animation.read()
+        if not raw.startswith(b"glTF") or len(raw) > 50 * 1024 * 1024:
+            return JSONResponse(
+                {"ok": False, "error": "VRMA must be a valid GLB under 50MB"},
+                status_code=400,
+            )
+        animation_id = uuid.uuid4().hex[:16]
+        directory = VRMA_DIR / _slug(conf_uid)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{animation_id}.vrma"
+        temp = path.with_suffix(".vrma.tmp")
+        temp.write_bytes(raw)
+        os.replace(temp, path)
+        profile = {
+            "id": animation_id,
+            "name": str(name).strip()[:80] or "角色动作",
+            "gesture": gesture,
+            "loop": bool(loop),
+            "enabled": True,
+            "filename": str(animation.filename or "animation.vrma")[:160],
+            "path": str(path.resolve()),
+            "size": len(raw),
+            "license_note": str(license_note).strip()[:300],
+            "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        state = _load_state()
+        state.setdefault("vrm_animations", {}).setdefault(conf_uid, []).append(profile)
+        _save_state(state)
+        return {"ok": True, "profile": profile}
+
+    @router.get("/api/companion/avatar/{conf_uid}/animations/{animation_id}/file")
+    async def serve_vrma_animation(
+        conf_uid: str, animation_id: str, request: Request
+    ):
+        if forbidden := _local_only(request):
+            return forbidden
+        profile = next(
+            (
+                item
+                for item in get_vrma_profiles(conf_uid)
+                if item.get("id") == animation_id and item.get("enabled", True)
+            ),
+            None,
+        )
+        if not profile:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        path = Path(str(profile.get("path") or "")).resolve()
+        expected = (VRMA_DIR / _slug(conf_uid)).resolve()
+        if path.parent != expected or not path.is_file():
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        return FileResponse(path, media_type="model/gltf-binary", filename=path.name)
+
+    @router.put("/api/companion/avatar/{conf_uid}/animations/{animation_id}")
+    async def update_vrma_animation(
+        conf_uid: str, animation_id: str, request: Request
+    ):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        state = _load_state()
+        profiles = state.setdefault("vrm_animations", {}).get(conf_uid, [])
+        target = next((item for item in profiles if item.get("id") == animation_id), None)
+        if not target:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        if "gesture" in body:
+            gesture = str(body["gesture"]).strip().lower()
+            if gesture not in VRMA_GESTURES:
+                return JSONResponse(
+                    {"ok": False, "error": "unsupported gesture"}, status_code=400
+                )
+            target["gesture"] = gesture
+        for key in ("enabled", "loop"):
+            if key in body:
+                target[key] = bool(body[key])
+        _save_state(state)
+        return {"ok": True, "profile": target}
+
+    @router.delete("/api/companion/avatar/{conf_uid}/animations/{animation_id}")
+    async def delete_vrma_animation(
+        conf_uid: str, animation_id: str, request: Request
+    ):
+        if forbidden := _local_only(request):
+            return forbidden
+        backup_manager.create_safety_snapshot(conf_uid, "before_vrma_delete")
+        state = _load_state()
+        profiles = state.setdefault("vrm_animations", {}).get(conf_uid, [])
+        target = next((item for item in profiles if item.get("id") == animation_id), None)
+        if not target:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        path = Path(str(target.get("path") or "")).resolve()
+        expected = (VRMA_DIR / _slug(conf_uid)).resolve()
+        if path.parent == expected:
+            path.unlink(missing_ok=True)
+        state["vrm_animations"][conf_uid] = [
+            item for item in profiles if item.get("id") != animation_id
+        ]
         _save_state(state)
         return {"ok": True}
 

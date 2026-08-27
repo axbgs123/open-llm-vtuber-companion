@@ -104,6 +104,15 @@ configuration system. Removing a character archives its YAML under
   upstream Live2D fallback from the companion console.
 - Three.js and `@pixiv/three-vrm` provide humanoid bones, expressions, physics,
   automatic framing and procedural idle/emotion gestures.
+- A semantic motion state machine maps greetings, agreement, disagreement,
+  thinking language and emotions to wave, nod, shake, thoughtful tilt,
+  emphasis, shy, surprised and open-happy gestures. Per-character style,
+  intensity and frequency controls keep movement from becoming repetitive.
+- Pointer-aware gaze uses the VRM look-at system and eases back to the camera
+  when the pointer leaves the stage.
+- Optional `.vrma` files can be bound to semantic gestures. They cross-fade in,
+  take priority over procedural gestures, and return to the configured idle
+  motion when finished. VRMA files and bindings are included in character backups.
 - `three-vrm-lip-sync` performs real-time MFCC vowel classification and drives
   the VRM `aa/ih/ou/ee/oh` visemes from the exact audio element being played.
 - Avatar settings and license notes are per character. Local VRM files are

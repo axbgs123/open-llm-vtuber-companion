@@ -144,6 +144,7 @@ def _character_state(conf_uid: str) -> dict[str, Any]:
         "active_voice": (state.get("active_voice") or {}).get(conf_uid),
         "avatars": (state.get("avatars") or {}).get(conf_uid),
         "vrm_models": (state.get("vrm_models") or {}).get(conf_uid),
+        "vrm_animations": (state.get("vrm_animations") or {}).get(conf_uid),
     }
 
 
@@ -156,6 +157,7 @@ def _character_files(conf_uid: str) -> list[Path]:
         ROOT / "chat_history" / conf_uid,
         ROOT / "companion_data" / "voice_references" / conf_uid,
         ROOT / "companion_data" / "vrm_models" / conf_uid,
+        ROOT / "companion_data" / "vrm_animations" / conf_uid,
     ):
         files.extend(_walk(directory))
     return sorted(set(files))
@@ -458,7 +460,14 @@ def _merge_character_state(conf_uid: str, backup_state: dict[str, Any]) -> None:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except Exception:
         state = {"memory": {}, "voices": {}, "active_voice": {}}
-    for section in ("memory", "voices", "active_voice", "avatars", "vrm_models"):
+    for section in (
+        "memory",
+        "voices",
+        "active_voice",
+        "avatars",
+        "vrm_models",
+        "vrm_animations",
+    ):
         state.setdefault(section, {})
         value = backup_state.get(section)
         if section == "voices" and isinstance(value, list):
@@ -481,6 +490,18 @@ def _merge_character_state(conf_uid: str, backup_state: dict[str, Any]) -> None:
                             ROOT
                             / "companion_data"
                             / "vrm_models"
+                            / conf_uid
+                            / Path(str(profile["path"])).name
+                        ).resolve()
+                    )
+        if section == "vrm_animations" and isinstance(value, list):
+            for profile in value:
+                if isinstance(profile, dict) and profile.get("path"):
+                    profile["path"] = str(
+                        (
+                            ROOT
+                            / "companion_data"
+                            / "vrm_animations"
                             / conf_uid
                             / Path(str(profile["path"])).name
                         ).resolve()
