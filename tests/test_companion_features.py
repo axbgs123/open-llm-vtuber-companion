@@ -28,7 +28,11 @@ from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
 from src.open_llm_vtuber.tts.cosyvoice_tts import TTSEngine as CosyVoiceEngine
 from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
 from src.open_llm_vtuber.conversations import conversation_utils
-from src.open_llm_vtuber.agent.output_types import Actions, DisplayText
+from src.open_llm_vtuber.agent.output_types import (
+    Actions,
+    DisplayText,
+    SentenceOutput,
+)
 from src.open_llm_vtuber.server import inject_companion_lipsync
 from src.open_llm_vtuber.chat_history_manager import get_history_list
 
@@ -66,24 +70,39 @@ class CompanionFeatureTests(unittest.TestCase):
             inject_companion_lipsync(injected).count("vrm_renderer.mjs"), 1
         )
 
-    def test_text_input_emits_companion_semantic_cue(self):
+    def test_text_input_does_not_emit_avatar_action_cue(self):
         async def run():
             websocket_send = AsyncMock()
             result = await conversation_utils.process_user_input(
                 "你好，很高兴见到你", AsyncMock(), websocket_send
             )
             self.assertEqual(result, "你好，很高兴见到你")
-            messages = [
-                json.loads(call.args[0])
-                for call in websocket_send.await_args_list
-            ]
-            self.assertIn(
-                {
-                    "type": "companion-semantic-input",
-                    "text": "你好，很高兴见到你",
-                },
-                messages,
+            websocket_send.assert_not_awaited()
+
+        asyncio.run(run())
+
+    def test_assistant_sentence_emits_intent_before_tts(self):
+        async def run():
+            websocket_send = AsyncMock()
+            tts_manager = AsyncMock()
+            output = SentenceOutput(
+                display_text=DisplayText(text="很高兴见到你"),
+                tts_text="很高兴见到你",
+                actions=Actions(expressions=["joy"]),
             )
+            result = await conversation_utils.handle_sentence_output(
+                output=output,
+                live2d_model=AsyncMock(),
+                tts_engine=AsyncMock(),
+                websocket_send=websocket_send,
+                tts_manager=tts_manager,
+            )
+            self.assertEqual(result, "很高兴见到你")
+            intent = json.loads(websocket_send.await_args_list[0].args[0])
+            self.assertEqual(intent["type"], "companion-ai-intent")
+            self.assertEqual(intent["display_text"]["text"], "很高兴见到你")
+            self.assertEqual(intent["actions"]["expressions"], ["joy"])
+            tts_manager.speak.assert_awaited_once()
 
         asyncio.run(run())
 

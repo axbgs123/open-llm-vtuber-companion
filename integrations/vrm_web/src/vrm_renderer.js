@@ -47,15 +47,21 @@ const state = {
   lookAtBase: new THREE.Vector3(0, 1.5, 1),
   host: null,
   lastError: "",
+  lastAssistantIntentText: "",
+  lastAssistantIntentAt: 0,
 };
 
 const expressionMap = {
   happy: "happy",
+  happiness: "happy",
   joy: "happy",
   smile: "happy",
+  smirk: "happy",
   sad: "sad",
+  sadness: "sad",
   sorrow: "sad",
   angry: "angry",
+  anger: "angry",
   surprise: "surprised",
   surprised: "surprised",
   excited: "happy",
@@ -70,14 +76,19 @@ const expressionMap = {
 
 const emotionGestureMap = {
   happy: "celebrate",
+  happiness: "celebrate",
   joy: "celebrate",
   excited: "celebrate",
   sad: "shy",
+  sadness: "shy",
   sorrow: "shy",
   shy: "shy",
-  angry: "emphasize",
+  angry: "angry",
+  anger: "angry",
+  disgust: "angry",
   surprise: "surprised",
   surprised: "surprised",
+  fear: "surprised",
 };
 
 const gestureDurations = {
@@ -208,12 +219,20 @@ function handleMessage(message) {
     void selectCharacter(String(message.conf_uid));
     return;
   }
-  if (message?.type === "companion-semantic-input") {
-    const text = String(message.text || "");
-    const gesture = chooseSemanticGesture(text, "neutral");
-    document.documentElement.dataset.companionSemanticInput = text.slice(0, 80);
-    document.documentElement.dataset.companionSemanticGesture = gesture || "none";
-    if (gesture) triggerGesture(gesture, text, true);
+  if (message?.type === "companion-ai-intent") {
+    const expressions = message.actions?.expressions || [];
+    const requested = expressions.find((item) => typeof item === "string");
+    if (requested) setEmotion(requested, 5000);
+    const text = String(message.display_text?.text || "");
+    const gesture = chooseSemanticGesture(text, requested || "neutral");
+    state.lastAssistantIntentText = text;
+    state.lastAssistantIntentAt = performance.now();
+    document.documentElement.dataset.companionAiIntent = text.slice(0, 80);
+    document.documentElement.dataset.companionAiGesture = gesture || "none";
+    const triggered = gesture ? triggerGesture(gesture, text, true) : false;
+    document.documentElement.dataset.companionAiGestureTriggered = String(
+      triggered,
+    );
     return;
   }
   if (message?.type === "audio") {
@@ -222,7 +241,12 @@ function handleMessage(message) {
     if (requested) setEmotion(requested, 5000);
     const text = String(message.display_text?.text || "");
     const gesture = chooseSemanticGesture(text, requested || "neutral");
-    if (gesture) triggerGesture(gesture, text);
+    const explicitGesture =
+      Boolean(requested) || ["wave", "nod", "shake", "think"].includes(gesture);
+    const repeatsIntent =
+      text === state.lastAssistantIntentText &&
+      performance.now() - state.lastAssistantIntentAt < 15000;
+    if (gesture && !repeatsIntent) triggerGesture(gesture, text, explicitGesture);
   }
 }
 
@@ -705,17 +729,33 @@ async function loadModel(modelUrl, animations = []) {
   state.mixer = new THREE.AnimationMixer(vrm.scene);
   state.mixer.addEventListener("finished", (event) => {
     if (event.action !== state.activeVrmaAction) return;
-    if (state.activeCombo) {
-      if (state.comboQueue.length) {
-        playNextComboStep();
-        return;
+    const finishAction = () => {
+      if (event.action !== state.activeVrmaAction) return;
+      document.documentElement.dataset.companionLastActionEndedAt = String(
+        Math.round(performance.now()),
+      );
+      if (state.activeCombo) {
+        if (state.comboQueue.length) {
+          playNextComboStep();
+          return;
+        }
+        state.activeCombo = null;
+        delete document.documentElement.dataset.companionMotionCombo;
       }
-      state.activeCombo = null;
-      delete document.documentElement.dataset.companionMotionCombo;
+      state.gesture = "idle";
+      emitGesture("idle", "mixer");
+      playVrmaGesture("idle");
+    };
+    const elapsedMs = performance.now() - state.gestureStartedAt;
+    const remainingMs = state.gestureDuration * 1000 - elapsedMs;
+    if (remainingMs > 50) {
+      document.documentElement.dataset.companionActionHoldMs = String(
+        Math.round(remainingMs),
+      );
+      setTimeout(finishAction, remainingMs);
+      return;
     }
-    state.gesture = "idle";
-    emitGesture("idle", "mixer");
-    playVrmaGesture("idle");
+    finishAction();
   });
   prepareBuiltinAnimations();
   vrm.scene.rotation.y = Math.PI;
@@ -917,10 +957,38 @@ function hashRatio(text) {
 function chooseSemanticGesture(text, emotion) {
   const clean = String(text || "").trim();
   const loweredEmotion = String(emotion || "").toLowerCase();
-  if (/(你好|嗨|哈喽|再见|拜拜|早上好|晚上好)/.test(clean)) return "wave";
-  if (/(谢谢|多谢|没错|当然|好的|好呀|可以|答应你)/.test(clean)) return "nod";
-  if (/(不行|不是|不要|不能|并不是|别这样)/.test(clean)) return "shake";
-  if (/(让我想想|想一想|我觉得|或许|可能|思考一下)/.test(clean)) return "think";
+  if (
+    /(你好|嗨|哈喽|再见|拜拜|早上好|晚上好|很高兴见到你|见到你真好|欢迎|好久不见|又见面)/.test(
+      clean,
+    )
+  ) return "wave";
+  if (
+    /(谢谢|多谢|没错|当然|好的|好呀|可以|答应你|没问题|我同意|说得对|确实|明白|知道了|交给我|放心)/.test(
+      clean,
+    )
+  ) return "nod";
+  if (
+    /(不行|不是|不要|不能|并不是|别这样|不可以|办不到|我拒绝|我不同意|别想|休想|没门)/.test(
+      clean,
+    )
+  ) return "shake";
+  if (
+    /(让我想想|我想想|想一想|我觉得|或许|可能|思考一下|分析一下|考虑一下|得想想|需要分析)/.test(
+      clean,
+    )
+  ) return "think";
+  if (
+    /(生气|烦人|别烦|滚开|滚吧|去你的|去死|讨厌|闭嘴|混蛋|可恶|气死|挑衅|惹我|不耐烦)/.test(
+      clean,
+    )
+  ) return "angry";
+  if (/(难过|伤心|难受|失落|沮丧|想哭|委屈)/.test(clean)) return "shy";
+  if (/(居然|竟然|真的吗|没想到|天哪|吓一跳|太意外)/.test(clean)) {
+    return "surprised";
+  }
+  if (/(哈哈|开心|太好了|真棒|太棒|喜欢|高兴)/.test(clean)) {
+    return "celebrate";
+  }
   const emotional = emotionGestureMap[loweredEmotion];
   if (emotional) return emotional;
   const settings = state.settings || {};
@@ -943,6 +1011,7 @@ function playVrmaGesture(name, forceOnce = false) {
     ? group[Math.abs(Math.floor(state.elapsed * 10)) % group.length]
     : mocap || builtin;
   const { action, profile } = selected;
+  const selectedSource = group?.length ? "vrma" : mocap ? "mocap" : "builtin";
   const previous = state.activeVrmaAction;
   if (previous === action && name === "idle" && action.isRunning()) return true;
   action.reset();
@@ -950,6 +1019,13 @@ function playVrmaGesture(name, forceOnce = false) {
   action.clampWhenFinished = forceOnce || !profile.loop;
   action.zeroSlopeAtStart = true;
   action.zeroSlopeAtEnd = true;
+  action.setEffectiveTimeScale(1);
+  const clipDuration = Math.max(0.001, action.getClip().duration);
+  const playbackDuration =
+    selectedSource === "mocap" && name !== "idle"
+      ? Math.max(clipDuration, gestureDurations[name] || clipDuration)
+      : clipDuration;
+  if (playbackDuration > clipDuration) action.setDuration(playbackDuration);
   action.setLoop(
     profile.loop && !forceOnce ? THREE.LoopRepeat : THREE.LoopOnce,
     profile.loop && !forceOnce ? Infinity : 1,
@@ -960,12 +1036,19 @@ function playVrmaGesture(name, forceOnce = false) {
     action.fadeIn(0.24).play();
   }
   state.activeVrmaAction = action;
-  state.motionSource = group?.length
-    ? "vrma"
-    : profile.source || (mocap ? "mocap" : "builtin");
+  state.motionSource = profile.source || selectedSource;
   state.gesture = name;
   state.gestureStartedAt = performance.now();
-  state.gestureDuration = Math.max(0.5, action.getClip().duration);
+  state.gestureDuration = Math.max(0.5, playbackDuration);
+  if (name !== "idle") {
+    document.documentElement.dataset.companionLastActionStartedAt = String(
+      Math.round(state.gestureStartedAt),
+    );
+    document.documentElement.dataset.companionLastAction = name;
+    document.documentElement.dataset.companionLastActionSource = state.motionSource;
+    document.documentElement.dataset.companionLastActionDuration =
+      state.gestureDuration.toFixed(3);
+  }
   emitGesture(name, state.motionSource);
   return true;
 }

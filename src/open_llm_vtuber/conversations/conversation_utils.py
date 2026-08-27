@@ -102,6 +102,15 @@ async def handle_sentence_output(
             logger.debug("🚫 No translation engine available. Skipping translation.")
 
         full_response += display_text.text
+        await websocket_send(
+            json.dumps(
+                {
+                    "type": "companion-ai-intent",
+                    "display_text": display_text.to_dict(),
+                    "actions": actions.to_dict() if actions else None,
+                }
+            )
+        )
         await tts_manager.speak(
             tts_text=tts_text,
             display_text=display_text,
@@ -155,12 +164,8 @@ async def process_user_input(
         await websocket_send(
             json.dumps({"type": "user-input-transcription", "text": input_text})
         )
-    else:
-        input_text = user_input
-    await websocket_send(
-        json.dumps({"type": "companion-semantic-input", "text": input_text})
-    )
-    return input_text
+        return input_text
+    return user_input
 
 
 async def finalize_conversation_turn(

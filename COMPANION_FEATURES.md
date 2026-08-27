@@ -108,10 +108,17 @@ configuration system. Removing a character archives its YAML under
   thinking language and emotions to wave, nod, shake, thoughtful tilt,
   emphasis, shy, surprised and open-happy gestures. Per-character style,
   intensity and frequency controls keep movement from becoming repetitive.
-- Text and transcribed speech emit a dedicated semantic-input cue before the
-  LLM responds, so phrases such as greetings, agreement, refusal and thinking
-  trigger their gestures from the user's intent rather than depending on the
-  assistant to repeat the same keywords in its reply.
+- Gestures are selected only from the assistant's reply and explicit expression
+  tags, never directly from user text. Reply-side matching covers varied ways
+  to greet, agree, refuse and think, while Live2D's exact `anger`, `sadness`,
+  `joy`, `smirk`, `disgust`, `fear` and `surprise` tags map onto VRM emotion
+  and body gestures. Each assistant sentence sends its semantic action before
+  TTS generation, so slow or failed speech synthesis cannot delay movement;
+  the later audio payload is deduplicated against that intent signal. Obvious
+  emotional wording in the assistant reply can override a contradictory neutral
+  tag, covering anger, sadness, surprise and joy phrases. Short bundled mocap
+  clips are time-scaled to their semantic minimum duration, keeping reactions
+  visible without altering uploaded VRMA timing.
 - Built-in gestures are multi-bone quaternion keyframe clips with anticipation,
   action, overshoot and settle phases. A shared Three.js `AnimationMixer`
   cross-fades gestures and VRMA clips into the breathing idle rather than
