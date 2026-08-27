@@ -101,11 +101,8 @@ class TTSEngine(TTSInterface):
 
             record("voice_synthesis", 0, cached=True)
             return file_name
-        from ..runtime_manager import ensure_gpt_sovits_blocking, note_voice_activity
+        from ..runtime_manager import note_voice_activity
 
-        if not ensure_gpt_sovits_blocking():
-            logger.error("GPT-SoVITS could not be started on demand")
-            return None
         note_voice_activity()
         # Prepare the data for the POST request
         data = {

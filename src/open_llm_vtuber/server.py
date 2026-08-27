@@ -24,13 +24,17 @@ from .service_context import ServiceContext
 from .config_manager.utils import Config
 
 LIP_SYNC_BRIDGE_TAG = '<script src="/companion-assets/lip_sync_bridge.js"></script>'
+VRM_RENDERER_TAG = (
+    '<script type="module" src="/companion-assets/vrm_renderer.mjs"></script>'
+)
 
 
 def inject_companion_lipsync(html: str) -> str:
     """Inject the local lip-sync compatibility bridge before frontend modules run."""
-    if LIP_SYNC_BRIDGE_TAG in html:
+    tags = [tag for tag in (LIP_SYNC_BRIDGE_TAG, VRM_RENDERER_TAG) if tag not in html]
+    if not tags:
         return html
-    return html.replace("</head>", f"  {LIP_SYNC_BRIDGE_TAG}\n  </head>")
+    return html.replace("<head>", "<head>\n  " + "\n  ".join(tags))
 
 
 # Create a custom StaticFiles class that adds CORS headers

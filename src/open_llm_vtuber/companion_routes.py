@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -41,6 +42,7 @@ ROOT = Path.cwd().resolve()
 CHARACTERS_DIR = ROOT / "characters"
 DATA_DIR = ROOT / "companion_data"
 VOICE_DIR = DATA_DIR / "voice_references"
+VRM_DIR = DATA_DIR / "vrm_models"
 STATE_PATH = DATA_DIR / "state.json"
 PROACTIVE_PROMPT_PATH = ROOT / "prompts" / "utils" / "proactive_speak_prompt.txt"
 
@@ -71,6 +73,13 @@ DEFAULT_LIPSYNC = {
     "attack": 0.68,
     "release": 0.34,
 }
+DEFAULT_AVATAR = {
+    "renderer": "live2d",
+    "active_vrm": "",
+    "scale": 1.0,
+    "camera_distance": 1.15,
+    "y_offset": 0.0,
+}
 
 _yaml = YAML()
 _yaml.preserve_quotes = True
@@ -83,6 +92,8 @@ def _default_state() -> dict[str, Any]:
         "voices": {},
         "active_voice": {},
         "lipsync": dict(DEFAULT_LIPSYNC),
+        "avatars": {},
+        "vrm_models": {},
     }
 
 
@@ -250,6 +261,32 @@ def get_lipsync_settings() -> dict[str, Any]:
     return settings
 
 
+def get_avatar_settings(conf_uid: str) -> dict[str, Any]:
+    state = _load_state()
+    settings = dict(DEFAULT_AVATAR)
+    saved = state.get("avatars", {}).get(str(conf_uid), {})
+    if isinstance(saved, dict):
+        settings.update(saved)
+    settings["renderer"] = (
+        settings.get("renderer")
+        if settings.get("renderer") in {"live2d", "vrm"}
+        else "live2d"
+    )
+    settings["scale"] = max(0.3, min(3.0, float(settings.get("scale", 1.0))))
+    settings["camera_distance"] = max(
+        0.6, min(5.0, float(settings.get("camera_distance", 1.15)))
+    )
+    settings["y_offset"] = max(-2.0, min(2.0, float(settings.get("y_offset", 0.0))))
+    settings["active_vrm"] = str(settings.get("active_vrm") or "")
+    return settings
+
+
+def get_vrm_profiles(conf_uid: str) -> list[dict[str, Any]]:
+    state = _load_state()
+    profiles = state.get("vrm_models", {}).get(str(conf_uid), [])
+    return [profile for profile in profiles if isinstance(profile, dict)]
+
+
 def write_proactive_prompt(
     settings: dict[str, Any] | None = None, selected_topic: str | None = None
 ) -> str:
@@ -298,18 +335,19 @@ def _activate_voice(conf_uid: str, profile: dict[str, Any]) -> None:
     data = _read_roundtrip(path)
     char = data.setdefault("character_config", {})
     tts = char.setdefault("tts_config", {})
-    tts["tts_model"] = "gpt_sovits_tts"
-    tts["gpt_sovits_tts"] = {
-        "api_url": profile["api_url"],
-        "text_lang": profile["text_lang"],
-        "ref_audio_path": profile["ref_audio_path"],
-        "prompt_lang": profile["prompt_lang"],
+    tts["tts_model"] = "cosyvoice_tts"
+    api_url = str(profile.get("api_url") or "http://127.0.0.1:50000/tts")
+    base_url = api_url.rsplit("/tts", 1)[0]
+    tts["cosyvoice_tts"] = {
+        "client_url": base_url,
+        "mode_checkbox_group": "零样本声音克隆",
+        "sft_dropdown": "中文女",
         "prompt_text": profile["prompt_text"],
-        "text_split_method": "cut5",
-        "batch_size": "1",
-        "media_type": "wav",
-        # GPT-SoVITS begins returning the first sentence as soon as it is ready.
-        "streaming_mode": "true",
+        "prompt_wav_upload_url": profile["ref_audio_path"],
+        "prompt_wav_record_url": profile["ref_audio_path"],
+        "instruct_text": "",
+        "seed": 0,
+        "api_name": "/tts",
     }
     _write_roundtrip(path, data)
 
@@ -398,7 +436,7 @@ def init_companion_routes() -> APIRouter:
             "ok": True,
             "characters": len(_character_entries()),
             "proactive": get_proactive_settings(),
-            "voice_backend": "GPT-SoVITS",
+            "voice_backend": "CosyVoice3",
             "runtime": await runtime_manager.status(),
         }
 
@@ -407,6 +445,144 @@ def init_companion_routes() -> APIRouter:
         if forbidden := _local_only(request):
             return forbidden
         return {"ok": True, **get_lipsync_settings()}
+
+    @router.get("/api/companion/avatar/{conf_uid}")
+    async def get_avatar(conf_uid: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        settings = get_avatar_settings(conf_uid)
+        profiles = get_vrm_profiles(conf_uid)
+        active = next(
+            (
+                profile
+                for profile in profiles
+                if profile.get("id") == settings["active_vrm"]
+            ),
+            None,
+        )
+        return {
+            "ok": True,
+            "settings": settings,
+            "profiles": profiles,
+            "active": active,
+            "model_url": (
+                f"/api/companion/avatar/{conf_uid}/{settings['active_vrm']}/file"
+                if active
+                else ""
+            ),
+        }
+
+    @router.put("/api/companion/avatar/{conf_uid}")
+    async def put_avatar(conf_uid: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        state = _load_state()
+        settings = get_avatar_settings(conf_uid)
+        for key in DEFAULT_AVATAR:
+            if key in body:
+                settings[key] = body[key]
+        renderer = str(settings.get("renderer") or "live2d")
+        if renderer not in {"live2d", "vrm"}:
+            return JSONResponse(
+                {"ok": False, "error": "invalid renderer"}, status_code=400
+            )
+        active_vrm = str(settings.get("active_vrm") or "")
+        if renderer == "vrm" and not any(
+            profile.get("id") == active_vrm for profile in get_vrm_profiles(conf_uid)
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "select an installed VRM model"}, status_code=400
+            )
+        settings["renderer"] = renderer
+        settings["active_vrm"] = active_vrm
+        state.setdefault("avatars", {})[conf_uid] = settings
+        _save_state(state)
+        return {"ok": True, "settings": get_avatar_settings(conf_uid)}
+
+    @router.post("/api/companion/avatar/{conf_uid}/models")
+    async def upload_vrm_model(
+        conf_uid: str,
+        request: Request,
+        model: UploadFile = File(...),
+        name: str = Form("VRM角色"),
+        license_note: str = Form("仅限本机使用"),
+    ):
+        if forbidden := _local_only(request):
+            return forbidden
+        raw = await model.read()
+        if not raw.startswith(b"glTF") or len(raw) > 200 * 1024 * 1024:
+            return JSONResponse(
+                {"ok": False, "error": "VRM must be a valid GLB file under 200MB"},
+                status_code=400,
+            )
+        model_id = uuid.uuid4().hex[:16]
+        directory = VRM_DIR / _slug(conf_uid)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{model_id}.vrm"
+        temp = path.with_suffix(".vrm.tmp")
+        temp.write_bytes(raw)
+        os.replace(temp, path)
+        state = _load_state()
+        profile = {
+            "id": model_id,
+            "name": str(name).strip()[:80] or "VRM角色",
+            "filename": str(model.filename or "model.vrm")[:160],
+            "path": str(path.resolve()),
+            "size": len(raw),
+            "license_note": str(license_note).strip()[:300],
+            "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        state.setdefault("vrm_models", {}).setdefault(conf_uid, []).append(profile)
+        avatar = get_avatar_settings(conf_uid)
+        avatar.update({"renderer": "vrm", "active_vrm": model_id})
+        state.setdefault("avatars", {})[conf_uid] = avatar
+        _save_state(state)
+        return {
+            "ok": True,
+            "profile": profile,
+            "settings": get_avatar_settings(conf_uid),
+        }
+
+    @router.get("/api/companion/avatar/{conf_uid}/{model_id}/file")
+    async def serve_vrm_model(conf_uid: str, model_id: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        profile = next(
+            (item for item in get_vrm_profiles(conf_uid) if item.get("id") == model_id),
+            None,
+        )
+        if not profile:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        path = Path(str(profile.get("path") or "")).resolve()
+        expected = (VRM_DIR / _slug(conf_uid)).resolve()
+        if path.parent != expected or not path.is_file():
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        return FileResponse(path, media_type="model/gltf-binary", filename=path.name)
+
+    @router.delete("/api/companion/avatar/{conf_uid}/{model_id}")
+    async def delete_vrm_model(conf_uid: str, model_id: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        backup_manager.create_safety_snapshot(conf_uid, "before_vrm_delete")
+        state = _load_state()
+        profiles = state.setdefault("vrm_models", {}).get(conf_uid, [])
+        target = next((item for item in profiles if item.get("id") == model_id), None)
+        if not target:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        path = Path(str(target.get("path") or "")).resolve()
+        expected = (VRM_DIR / _slug(conf_uid)).resolve()
+        if path.parent == expected:
+            path.unlink(missing_ok=True)
+        state["vrm_models"][conf_uid] = [
+            item for item in profiles if item.get("id") != model_id
+        ]
+        avatar = get_avatar_settings(conf_uid)
+        if avatar.get("active_vrm") == model_id:
+            avatar.update({"active_vrm": "", "renderer": "live2d"})
+            state.setdefault("avatars", {})[conf_uid] = avatar
+        _save_state(state)
+        return {"ok": True}
 
     @router.put("/api/companion/lipsync")
     async def put_lipsync(request: Request):
@@ -568,8 +744,8 @@ def init_companion_routes() -> APIRouter:
             return forbidden
         if service == "ollama":
             ok = await runtime_manager.ensure_ollama()
-        elif service == "gpt-sovits":
-            ok = await runtime_manager.ensure_gpt_sovits()
+        elif service == "cosyvoice":
+            ok = await runtime_manager.ensure_cosyvoice()
         else:
             return JSONResponse(
                 {"ok": False, "error": "unknown service"}, status_code=404
@@ -584,8 +760,8 @@ def init_companion_routes() -> APIRouter:
             ok = await runtime_manager.unload_ollama_model()
         elif service == "ollama":
             ok = await runtime_manager.stop_ollama()
-        elif service == "gpt-sovits":
-            ok = await runtime_manager.stop_gpt_sovits()
+        elif service == "cosyvoice":
+            ok = await runtime_manager.stop_cosyvoice()
         else:
             return JSONResponse(
                 {"ok": False, "error": "unknown service"}, status_code=404
@@ -917,7 +1093,7 @@ def init_companion_routes() -> APIRouter:
         prompt_text: str = Form(""),
         prompt_lang: str = Form("zh"),
         text_lang: str = Form("zh"),
-        api_url: str = Form("http://127.0.0.1:9880/tts"),
+        api_url: str = Form("http://127.0.0.1:50000/tts"),
     ):
         if forbidden := _local_only(request):
             return forbidden
@@ -1017,38 +1193,34 @@ def init_companion_routes() -> APIRouter:
             return JSONResponse(
                 {"ok": False, "error": "profile not found"}, status_code=404
             )
-        if not await runtime_manager.ensure_gpt_sovits():
+        if not await runtime_manager.ensure_cosyvoice():
             return JSONResponse(
-                {"ok": False, "error": "GPT-SoVITS could not start"}, status_code=503
+                {"ok": False, "error": "CosyVoice could not start"}, status_code=503
             )
         runtime_manager.note_voice_activity()
         try:
             async with httpx.AsyncClient(timeout=180) as client:
-                result = await client.get(
-                    profile["api_url"],
-                    params={
+                result = await client.post(
+                    profile.get("api_url") or "http://127.0.0.1:50000/tts",
+                    json={
                         "text": text[:500],
-                        "text_lang": profile["text_lang"],
-                        "ref_audio_path": profile["ref_audio_path"],
-                        "prompt_lang": profile["prompt_lang"],
+                        "prompt_wav": profile["ref_audio_path"],
                         "prompt_text": profile["prompt_text"],
-                        "text_split_method": "cut5",
-                        "batch_size": 1,
-                        "media_type": "wav",
-                        "streaming_mode": False,
+                        "emotion": "happy",
+                        "speed": 1.0,
                     },
                 )
                 result.raise_for_status()
             return Response(result.content, media_type="audio/wav")
         except Exception as exc:
             return JSONResponse(
-                {"ok": False, "error": f"GPT-SoVITS unavailable: {exc}"},
+                {"ok": False, "error": f"CosyVoice unavailable: {exc}"},
                 status_code=502,
             )
 
     @router.get("/api/companion/voice-backend/health")
     async def voice_health(
-        request: Request, api_url: str = "http://127.0.0.1:9880/tts"
+        request: Request, api_url: str = "http://127.0.0.1:50000/tts"
     ):
         if forbidden := _local_only(request):
             return forbidden
@@ -1059,8 +1231,13 @@ def init_companion_routes() -> APIRouter:
         base = api_url.rsplit("/tts", 1)[0]
         try:
             async with httpx.AsyncClient(timeout=3) as client:
-                response = await client.get(base + "/docs")
-            return {"ok": response.status_code < 500, "status": response.status_code}
+                response = await client.get(base + "/health")
+            details = response.json() if response.status_code == 200 else {}
+            return {
+                "ok": bool(details.get("ok")),
+                "status": response.status_code,
+                **details,
+            }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 

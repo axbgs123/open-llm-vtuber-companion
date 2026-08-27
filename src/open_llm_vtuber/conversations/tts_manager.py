@@ -181,7 +181,7 @@ class TTSTaskManager:
         """Process TTS generation and queue the result for ordered delivery"""
         audio_file_path = None
         try:
-            audio_file_path = await self._generate_audio(tts_engine, tts_text)
+            audio_file_path = await self._generate_audio(tts_engine, tts_text, actions)
             payload = prepare_audio_payload(
                 audio_path=audio_file_path,
                 display_text=display_text,
@@ -205,9 +205,19 @@ class TTSTaskManager:
                 tts_engine.remove_file(audio_file_path)
                 logger.debug("Audio cache file cleaned.")
 
-    async def _generate_audio(self, tts_engine: TTSInterface, text: str) -> str:
+    async def _generate_audio(
+        self, tts_engine: TTSInterface, text: str, actions: Optional[Actions] = None
+    ) -> str:
         """Generate audio file from text"""
         logger.debug(f"🏃Generating audio for '''{text}'''...")
+        contextual = getattr(tts_engine, "generate_audio_with_context", None)
+        if callable(contextual):
+            return await asyncio.to_thread(
+                contextual,
+                text,
+                actions,
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
+            )
         return await tts_engine.async_generate_audio(
             text=text,
             file_name_no_ext=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",

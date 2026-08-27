@@ -39,6 +39,13 @@ test("lip-sync PCM is ready before browser audio starts", async () => {
 
   globalThis.HTMLMediaElement = FakeMediaElement;
   globalThis.window = globalThis;
+  globalThis.dispatchEvent = () => true;
+  globalThis.CustomEvent = class CustomEvent {
+    constructor(type, options = {}) {
+      this.type = type;
+      this.detail = options.detail;
+    }
+  };
   globalThis.document = { documentElement: { dataset: {} } };
   globalThis.getLAppAdapter = () => ({
     getModel: () => ({ _wavFileHandler: handler }),

@@ -1,0 +1,17 @@
+{
+  "name": "open-llm-vtuber-vrm-adapter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "3.5.5",
+    "@pixiv/three-vrm-animation": "3.5.5",
+    "three": "0.185.1",
+    "three-vrm-lip-sync": "0.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

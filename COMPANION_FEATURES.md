@@ -1,15 +1,16 @@
 # Local Companion Suite
 
 This branch extends Open-LLM-VTuber with a local-first companion layer while
-keeping upstream chat, Live2D, ASR and TTS behavior intact.
+keeping upstream chat and ASR behavior intact while adding a selectable VRM stage
+and a bundled Chinese CosyVoice3 runtime.
 
 ## Start and stop
 
 - Double-click `start-companion.command`. It starts Ollama, starts the server,
   and opens the companion console.
-- GPT-SoVITS starts only when a cloned voice is previewed or used.
+- CosyVoice3 starts only when a cloned voice is previewed or used.
 - Double-click `stop-companion.command` to stop the server, unload local model
-  weights, stop GPT-SoVITS, and quit Ollama.
+  weights, stop CosyVoice3, and quit Ollama.
 - Resource behavior can be changed from **Companion Console → Local compute**.
 
 ## Companion console
@@ -97,18 +98,30 @@ configuration system. Removing a character archives its YAML under
   fetches official upstream, aborts cleanly on conflicts, then runs migrations
   and tests.
 
+### VRM body and performance
+
+- Import VRM 0.x/1.0 avatars per character and switch between VRM and the
+  upstream Live2D fallback from the companion console.
+- Three.js and `@pixiv/three-vrm` provide humanoid bones, expressions, physics,
+  automatic framing and procedural idle/emotion gestures.
+- `three-vrm-lip-sync` performs real-time MFCC vowel classification and drives
+  the VRM `aa/ih/ou/ee/oh` visemes from the exact audio element being played.
+- Avatar settings and license notes are per character. Local VRM files are
+  ignored by Git and included in encrypted character backups.
+
 ### Voice cloning
 
 The integration wraps the official
-[RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) local API.
+[FunAudioLLM/CosyVoice](https://github.com/FunAudioLLM/CosyVoice) CosyVoice3
+0.5B model behind a loopback-only headless API.
 Reference audio and voice profiles are stored per character. Only clone a voice
 you own or have explicit permission to use.
 
-- Long GPT-SoVITS lines are split into independently playable phrase fragments.
-  The first fragment enters the existing frontend audio queue while later
-  fragments continue generating, so playback no longer waits for the whole line.
-- Synthesized phrases are cached locally by text and voice identity. Cache files
-  are excluded from backups and can be cleared from the console.
+- The same semantic expression drives VRM facial expression, procedural gesture,
+  and a Chinese speaking-style instruction such as happy, sad, angry, surprised,
+  shy, calm, or excited.
+- The service is serialized for model safety, starts on demand, and unloads after
+  the configured idle period. It listens only on `127.0.0.1:50000`.
 
 ### Live2D lip-sync bridge
 
@@ -127,9 +140,11 @@ you own or have explicit permission to use.
 The diagnostics center records only local duration, success, cache-hit and peak
 process-memory metrics; it never stores conversation text.
 
-- Base local chat: approximately 5–7 GB RAM.
-- Chat plus GPT-SoVITS: approximately 8–12 GB RAM.
-- Simultaneous LLM, semantic retrieval and voice activity: reserve 12–16 GB.
+- CosyVoice3 alone: approximately 4.1 GB RAM after one synthesis.
+- Base local chat plus VRM: approximately 5–8 GB RAM depending on the LLM.
+- Chat, VRM, CosyVoice3 and semantic retrieval together: reserve 12–18 GB.
+- CosyVoice3 disk usage on Apple Silicon is approximately 10 GB including its
+  isolated Python environment and the 0.5B model.
 
 These are working-set estimates rather than additional disk downloads. The new
 continuity, reminder, diagnostics and cache-management code itself normally adds
@@ -142,8 +157,10 @@ The following remain local and are excluded from Git:
 - `chat_history/`
 - `companion_data/`
 - `models/`
-- `integrations/gpt_sovits/GPT-SoVITS/`
-- `integrations/gpt_sovits/miniforge/`
+- `integrations/cosyvoice/CosyVoice/`
+- `integrations/cosyvoice/.venv/`
+- `integrations/cosyvoice/models/`
+- `integrations/vrm_web/node_modules/`
 
 The private repository contains integration code and install scripts, not model
 weights, voice samples, API credentials, or conversations.

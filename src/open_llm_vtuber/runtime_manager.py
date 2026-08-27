@@ -17,9 +17,9 @@ from loguru import logger
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "companion_data"
 SETTINGS_PATH = DATA_DIR / "runtime.json"
-PID_PATH = DATA_DIR / "gpt_sovits.pid"
-LOG_PATH = DATA_DIR / "gpt_sovits.log"
-GPT_START = ROOT / "integrations" / "gpt_sovits" / "start.command"
+COSY_PID_PATH = DATA_DIR / "cosyvoice.pid"
+COSY_LOG_PATH = DATA_DIR / "cosyvoice.log"
+COSY_START = ROOT / "integrations" / "cosyvoice" / "start.command"
 
 DEFAULTS: dict[str, Any] = {
     "ollama_model": "qwen2.5:3b",
@@ -104,9 +104,14 @@ async def ollama_running() -> bool:
     return bool(response and response.status_code == 200)
 
 
-async def gpt_sovits_running() -> bool:
-    response = await _get("http://127.0.0.1:9880/docs")
-    return bool(response and response.status_code == 200)
+async def cosyvoice_running() -> bool:
+    response = await _get("http://127.0.0.1:50000/health", timeout=3.0)
+    if not response or response.status_code != 200:
+        return False
+    try:
+        return bool(response.json().get("ok"))
+    except Exception:
+        return False
 
 
 async def ensure_ollama(timeout: float = 30.0) -> bool:
@@ -165,71 +170,65 @@ async def unload_ollama_model(model: str | None = None) -> bool:
     return success
 
 
-def _read_pid() -> int | None:
-    try:
-        return int(PID_PATH.read_text(encoding="utf-8").strip())
-    except Exception:
-        return None
-
-
-async def ensure_gpt_sovits(timeout: float = 120.0) -> bool:
-    if await gpt_sovits_running():
+async def ensure_cosyvoice(timeout: float = 240.0) -> bool:
+    if await cosyvoice_running():
         note_voice_activity()
         return True
-    if not GPT_START.is_file():
+    if not COSY_START.is_file():
         return False
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    log_handle = LOG_PATH.open("ab")
+    log_handle = COSY_LOG_PATH.open("ab")
     try:
         process = subprocess.Popen(
-            ["/bin/zsh", str(GPT_START)],
+            ["/bin/zsh", str(COSY_START)],
             cwd=ROOT,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        PID_PATH.write_text(str(process.pid), encoding="utf-8")
+        COSY_PID_PATH.write_text(str(process.pid), encoding="utf-8")
     finally:
         log_handle.close()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if await gpt_sovits_running():
+        if await cosyvoice_running():
             note_voice_activity()
-            logger.info("[runtime] GPT-SoVITS started on demand")
+            logger.info("[runtime] CosyVoice started on demand")
             return True
         await asyncio.sleep(2)
     return False
 
 
-def ensure_gpt_sovits_blocking(timeout: float = 120.0) -> bool:
-    """Thread-friendly wrapper used by synchronous TTS engines."""
-    return asyncio.run(ensure_gpt_sovits(timeout))
+def ensure_cosyvoice_blocking(timeout: float = 240.0) -> bool:
+    """Thread-friendly wrapper used by the synchronous CosyVoice client."""
+    return asyncio.run(ensure_cosyvoice(timeout))
 
 
-async def stop_gpt_sovits() -> bool:
-    if await gpt_sovits_running():
+async def stop_cosyvoice() -> bool:
+    if await cosyvoice_running():
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                await client.get(
-                    "http://127.0.0.1:9880/control", params={"command": "exit"}
-                )
+                await client.post("http://127.0.0.1:50000/shutdown")
         except Exception:
             pass
-        for _ in range(10):
-            if not await gpt_sovits_running():
-                PID_PATH.unlink(missing_ok=True)
+        for _ in range(20):
+            if not await cosyvoice_running():
+                COSY_PID_PATH.unlink(missing_ok=True)
                 return True
             await asyncio.sleep(0.5)
-    pid = _read_pid()
+    try:
+        pid = int(COSY_PID_PATH.read_text(encoding="utf-8").strip())
+    except Exception:
+        pid = None
     if pid:
         try:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
         except Exception as exc:
-            logger.warning(f"[runtime] GPT-SoVITS stop failed: {exc}")
-    PID_PATH.unlink(missing_ok=True)
-    return not await gpt_sovits_running()
+            logger.warning(f"[runtime] CosyVoice stop failed: {exc}")
+    COSY_PID_PATH.unlink(missing_ok=True)
+    return not await cosyvoice_running()
 
 
 async def stop_ollama() -> bool:
@@ -257,7 +256,7 @@ async def stop_ollama() -> bool:
 
 async def status() -> dict[str, Any]:
     ollama = await ollama_running()
-    gpt = await gpt_sovits_running()
+    cosy = await cosyvoice_running()
     loaded_models: list[str] = []
     if ollama:
         try:
@@ -270,7 +269,7 @@ async def status() -> dict[str, Any]:
             pass
     return {
         "ollama": ollama,
-        "gpt_sovits": gpt,
+        "cosyvoice": cosy,
         "loaded_models": loaded_models,
         "connected_clients": _connected_clients,
         "settings": get_settings(),
@@ -290,12 +289,12 @@ async def _monitor_loop() -> None:
             ):
                 _llm_unloaded = await unload_ollama_model()
             if (
-                await gpt_sovits_running()
+                await cosyvoice_running()
                 and now - _last_voice_activity >= settings["voice_idle_unload_seconds"]
                 and _connected_clients == 0
             ):
-                await stop_gpt_sovits()
-                logger.info("[runtime] stopped idle GPT-SoVITS")
+                await stop_cosyvoice()
+                logger.info("[runtime] stopped idle voice service")
         except asyncio.CancelledError:
             return
         except Exception as exc:

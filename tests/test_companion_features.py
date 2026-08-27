@@ -25,6 +25,7 @@ from src.open_llm_vtuber import (
     environment_awareness,
 )
 from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
+from src.open_llm_vtuber.tts.cosyvoice_tts import TTSEngine as CosyVoiceEngine
 from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
 from src.open_llm_vtuber.agent.output_types import Actions, DisplayText
 from src.open_llm_vtuber.server import inject_companion_lipsync
@@ -55,9 +56,41 @@ class CompanionFeatureTests(unittest.TestCase):
         html = '<html><head><script type="module" src="main.js"></script></head></html>'
         injected = inject_companion_lipsync(html)
         self.assertIn("/companion-assets/lip_sync_bridge.js", injected)
+        self.assertIn("/companion-assets/vrm_renderer.mjs", injected)
         self.assertEqual(
             inject_companion_lipsync(injected).count("lip_sync_bridge.js"), 1
         )
+        self.assertEqual(
+            inject_companion_lipsync(injected).count("vrm_renderer.mjs"), 1
+        )
+
+    def test_avatar_settings_are_per_character_and_bounded(self):
+        data_dir = self.root / "companion_data"
+        with (
+            patch.object(companion_routes, "DATA_DIR", data_dir),
+            patch.object(companion_routes, "STATE_PATH", data_dir / "state.json"),
+        ):
+            state = companion_routes._default_state()
+            state["avatars"]["alice"] = {
+                "renderer": "vrm",
+                "active_vrm": "model1",
+                "scale": 99,
+                "camera_distance": 0,
+                "y_offset": -9,
+            }
+            state["vrm_models"]["alice"] = [{"id": "model1", "name": "Alice 3D"}]
+            companion_routes._save_state(state)
+            settings = companion_routes.get_avatar_settings("alice")
+            self.assertEqual(settings["renderer"], "vrm")
+            self.assertEqual(settings["scale"], 3.0)
+            self.assertEqual(settings["camera_distance"], 0.6)
+            self.assertEqual(settings["y_offset"], -2.0)
+            self.assertEqual(
+                companion_routes.get_avatar_settings("bob")["renderer"], "live2d"
+            )
+            self.assertEqual(
+                companion_routes.get_vrm_profiles("alice")[0]["name"], "Alice 3D"
+            )
 
     def test_lipsync_settings_are_bounded(self):
         data_dir = self.root / "companion_data"
@@ -573,14 +606,16 @@ class CompanionFeatureTests(unittest.TestCase):
         with (
             patch.object(engine, "_cache_path", return_value=cached),
             patch.object(engine, "generate_cache_file_name", return_value=str(output)),
-            patch(
-                "src.open_llm_vtuber.runtime_manager.ensure_gpt_sovits_blocking"
-            ) as ensure,
             patch.object(companion_diagnostics, "PATH", self.root / "voice-diag.json"),
         ):
             self.assertEqual(engine.generate_audio("你好"), str(output))
-            ensure.assert_not_called()
             self.assertEqual(output.read_bytes(), cached.read_bytes())
+
+    def test_cosyvoice_maps_character_expression_to_voice_emotion(self):
+        self.assertEqual(
+            CosyVoiceEngine._emotion(Actions(expressions=["excited"])), "excited"
+        )
+        self.assertEqual(CosyVoiceEngine._emotion(Actions()), "neutral")
 
 
 if __name__ == "__main__":

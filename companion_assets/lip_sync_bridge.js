@@ -10,6 +10,7 @@
 
   const originalPlay = HTMLMediaElement.prototype.play;
   const patchedHandlers = new WeakSet();
+  const beforePlayHooks = new Set();
   const config = {
     gain: 1.35,
     silenceThreshold: 0.018,
@@ -64,15 +65,39 @@
     }
   }
 
+  async function prepareCompanionPlayback(media) {
+    for (const hook of beforePlayHooks) {
+      try {
+        await hook(media);
+      } catch (error) {
+        console.warn("[Companion Audio] before-play hook failed", error);
+      }
+    }
+    window.dispatchEvent(new CustomEvent("companion-speech-start", { detail: { media } }));
+    media.addEventListener(
+      "ended",
+      () => window.dispatchEvent(new CustomEvent("companion-speech-end")),
+      { once: true },
+    );
+  }
+
+  function playAfterCompanionPreparation(media) {
+    return prepareCompanionPlayback(media).then(() => originalPlay.call(media));
+  }
+
   HTMLMediaElement.prototype.play = function companionSynchronizedPlay() {
-    if (!status.enabled || !isCompanionSpeech(this)) {
+    if (!isCompanionSpeech(this)) {
       return originalPlay.call(this);
     }
+
+    const useLive2DLipSync =
+      status.enabled && document.documentElement.dataset.companionRenderer !== "vrm";
+    if (!useLive2DLipSync) return playAfterCompanionPreparation(this);
 
     const handler = currentHandler();
     if (!handler?.loadWavFile) {
       status.fallbacks += 1;
-      return originalPlay.call(this);
+      return playAfterCompanionPreparation(this);
     }
 
     patchHandler(handler);
@@ -86,7 +111,7 @@
     handler.__companionPrepared = { source, promise: preload };
 
     return preload
-      .then((ok) => {
+      .then(async (ok) => {
         if (ok === false) throw new Error("Live2D PCM decode returned false");
         handler._sampleOffset = 0;
         handler._userTimeSeconds = 0;
@@ -103,14 +128,22 @@
           },
           { once: true },
         );
+        await prepareCompanionPlayback(this);
         return originalPlay.call(this);
       })
       .catch((error) => {
         status.fallbacks += 1;
         status.lastError = String(error?.message || error);
         console.warn("[Companion LipSync] PCM preload failed; using normal playback", error);
-        return originalPlay.call(this);
+        return playAfterCompanionPreparation(this);
       });
+  };
+
+  window.CompanionAudioBridge = {
+    registerBeforePlay(hook) {
+      if (typeof hook === "function") beforePlayHooks.add(hook);
+      return () => beforePlayHooks.delete(hook);
+    },
   };
 
   window.CompanionLipSync = {
