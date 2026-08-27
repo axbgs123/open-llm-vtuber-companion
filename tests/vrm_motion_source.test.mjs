@@ -16,6 +16,10 @@ test("built-in VRM gestures use quaternion clips and mixer cross-fades", () => {
   assert.match(source, /companionWaveDepth/);
   assert.match(source, /retargetMesh2MotionClip/);
   assert.match(source, /mocapActions/);
+  assert.match(source, /beginAvatarDrag/);
+  assert.match(source, /stage_x/);
+  assert.match(source, /startMotionCombo/);
+  assert.match(source, /comboQueue/);
   assert.doesNotMatch(source, /updateProceduralPose/);
 
   const mocap = "companion_assets/motions/human-addon-animations.glb";

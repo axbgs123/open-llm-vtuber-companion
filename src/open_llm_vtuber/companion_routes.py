@@ -84,6 +84,8 @@ DEFAULT_AVATAR = {
     "gesture_intensity": 0.75,
     "gesture_frequency": 0.65,
     "gaze_enabled": True,
+    "stage_x": 0.0,
+    "stage_y": 0.0,
 }
 VRMA_GESTURES = {
     "wave",
@@ -95,6 +97,34 @@ VRMA_GESTURES = {
     "celebrate",
     "surprised",
     "idle",
+    "bow",
+    "dance",
+    "meditate",
+    "angry",
+    "confused",
+    "listen",
+    "cheer",
+    "shiver",
+    "tired",
+}
+BUNDLED_MOTIONS = {
+    "idle": "自然待机",
+    "wave": "全身问候",
+    "nod": "点头",
+    "shake": "拒绝",
+    "think": "困惑思考",
+    "shy": "倾听",
+    "celebrate": "胜利庆祝",
+    "surprised": "惊讶困惑",
+    "bow": "鞠躬",
+    "dance": "舞蹈",
+    "meditate": "冥想",
+    "angry": "生气",
+    "confused": "困惑",
+    "listen": "倾听待机",
+    "cheer": "挥拳庆祝",
+    "shiver": "发抖",
+    "tired": "疲惫",
 }
 
 _yaml = YAML()
@@ -111,6 +141,7 @@ def _default_state() -> dict[str, Any]:
         "avatars": {},
         "vrm_models": {},
         "vrm_animations": {},
+        "motion_combos": {},
     }
 
 
@@ -307,6 +338,8 @@ def get_avatar_settings(conf_uid: str) -> dict[str, Any]:
         0.0, min(1.0, float(settings.get("gesture_frequency", 0.65)))
     )
     settings["gaze_enabled"] = bool(settings.get("gaze_enabled", True))
+    settings["stage_x"] = max(-3.0, min(3.0, float(settings.get("stage_x", 0.0))))
+    settings["stage_y"] = max(-3.0, min(3.0, float(settings.get("stage_y", 0.0))))
     return settings
 
 
@@ -320,6 +353,12 @@ def get_vrma_profiles(conf_uid: str) -> list[dict[str, Any]]:
     state = _load_state()
     profiles = state.get("vrm_animations", {}).get(str(conf_uid), [])
     return [profile for profile in profiles if isinstance(profile, dict)]
+
+
+def get_motion_combos(conf_uid: str) -> list[dict[str, Any]]:
+    state = _load_state()
+    combos = state.get("motion_combos", {}).get(str(conf_uid), [])
+    return [combo for combo in combos if isinstance(combo, dict)]
 
 
 def write_proactive_prompt(
@@ -510,6 +549,11 @@ def init_companion_routes() -> APIRouter:
                 }
                 for profile in get_vrma_profiles(conf_uid)
             ],
+            "bundled_motions": [
+                {"id": motion_id, "name": motion_name}
+                for motion_id, motion_name in BUNDLED_MOTIONS.items()
+            ],
+            "motion_combos": get_motion_combos(conf_uid),
             "model_url": (
                 f"/api/companion/avatar/{conf_uid}/{settings['active_vrm']}/file"
                 if active
@@ -741,6 +785,79 @@ def init_companion_routes() -> APIRouter:
             path.unlink(missing_ok=True)
         state["vrm_animations"][conf_uid] = [
             item for item in profiles if item.get("id") != animation_id
+        ]
+        _save_state(state)
+        return {"ok": True}
+
+    @router.post("/api/companion/avatar/{conf_uid}/motion-combos")
+    async def create_motion_combo(conf_uid: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        name = str(body.get("name") or "").strip()[:80]
+        trigger = str(body.get("trigger") or "").strip().lower()
+        steps = [str(item).strip().lower() for item in body.get("steps", [])]
+        if not name:
+            return JSONResponse(
+                {"ok": False, "error": "combo name is required"}, status_code=400
+            )
+        if trigger not in VRMA_GESTURES:
+            return JSONResponse(
+                {"ok": False, "error": "unsupported trigger"}, status_code=400
+            )
+        if not 2 <= len(steps) <= 5 or any(
+            step == "idle"
+            or (step not in BUNDLED_MOTIONS and step not in VRMA_GESTURES)
+            for step in steps
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "choose 2-5 valid motion steps"},
+                status_code=400,
+            )
+        state = _load_state()
+        combos = state.setdefault("motion_combos", {}).setdefault(conf_uid, [])
+        if len(combos) >= 30:
+            return JSONResponse(
+                {"ok": False, "error": "motion combo limit reached"},
+                status_code=409,
+            )
+        combo = {
+            "id": uuid.uuid4().hex[:16],
+            "name": name,
+            "trigger": trigger,
+            "steps": steps,
+            "enabled": True,
+            "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        combos.append(combo)
+        _save_state(state)
+        return {"ok": True, "combo": combo}
+
+    @router.put("/api/companion/avatar/{conf_uid}/motion-combos/{combo_id}")
+    async def update_motion_combo(conf_uid: str, combo_id: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        body = await request.json()
+        state = _load_state()
+        combos = state.setdefault("motion_combos", {}).get(conf_uid, [])
+        combo = next((item for item in combos if item.get("id") == combo_id), None)
+        if not combo:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        if "enabled" in body:
+            combo["enabled"] = bool(body["enabled"])
+        _save_state(state)
+        return {"ok": True, "combo": combo}
+
+    @router.delete("/api/companion/avatar/{conf_uid}/motion-combos/{combo_id}")
+    async def delete_motion_combo(conf_uid: str, combo_id: str, request: Request):
+        if forbidden := _local_only(request):
+            return forbidden
+        state = _load_state()
+        combos = state.setdefault("motion_combos", {}).get(conf_uid, [])
+        if not any(item.get("id") == combo_id for item in combos):
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        state["motion_combos"][conf_uid] = [
+            item for item in combos if item.get("id") != combo_id
         ]
         _save_state(state)
         return {"ok": True}

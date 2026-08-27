@@ -145,6 +145,7 @@ def _character_state(conf_uid: str) -> dict[str, Any]:
         "avatars": (state.get("avatars") or {}).get(conf_uid),
         "vrm_models": (state.get("vrm_models") or {}).get(conf_uid),
         "vrm_animations": (state.get("vrm_animations") or {}).get(conf_uid),
+        "motion_combos": (state.get("motion_combos") or {}).get(conf_uid),
     }
 
 
@@ -467,6 +468,7 @@ def _merge_character_state(conf_uid: str, backup_state: dict[str, Any]) -> None:
         "avatars",
         "vrm_models",
         "vrm_animations",
+        "motion_combos",
     ):
         state.setdefault(section, {})
         value = backup_state.get(section)

@@ -116,10 +116,16 @@ configuration system. Removing a character archives its YAML under
   shoulder–elbow–hand chain. The wave target follows the animated wrist while
   moving toward the viewer; middle-finger and thumb geometry derive the actual
   finger direction and palm normal so different VRM hand axes still face forward.
-- Eight full-body clips are retargeted at runtime from Mesh2Motion's CC0 human
+- Sixteen full-body clips are retargeted at runtime from Mesh2Motion's CC0 human
   motion library: subtle idle, greeting, head nod, rejection, confusion,
   listening, victory and surprise. The playback priority is custom VRMA, then
   CC0 mocap, then quaternion/IK fallback, so normal use avoids synthesized poses.
+- The original narrow procedural stance remains the default idle; mocap takes
+  over only for gestures and then cross-fades back. The avatar itself can be
+  dragged in the chat stage, and its X/Y placement is stored per character.
+- The motion composer saves two-to-five-step sequences such as greeting → nod →
+  bow and can bind the resulting choreography to a semantic trigger. Steps use
+  the same custom-VRMA/CC0/fallback priority and transition through the mixer.
 - Pointer-aware gaze uses the VRM look-at system and eases back to the camera
   when the pointer leaves the stage.
 - Optional `.vrma` files can be bound to semantic gestures. They cross-fade in,

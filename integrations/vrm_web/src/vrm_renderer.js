@@ -38,6 +38,10 @@ const state = {
   builtinActions: new Map(),
   activeVrmaAction: null,
   motionSource: "idle",
+  motionCombos: [],
+  comboQueue: [],
+  activeCombo: null,
+  drag: null,
   gaze: { x: 0, y: 0, targetX: 0, targetY: 0 },
   lookAtTarget: null,
   lookAtBase: new THREE.Vector3(0, 1.5, 1),
@@ -85,6 +89,15 @@ const gestureDurations = {
   emphasize: 1.7,
   celebrate: 2.2,
   surprised: 1.4,
+  bow: 2.5,
+  dance: 4.0,
+  meditate: 4.0,
+  angry: 2.5,
+  confused: 3.0,
+  listen: 3.0,
+  cheer: 3.0,
+  shiver: 3.0,
+  tired: 3.0,
   idle: 0,
 };
 
@@ -135,7 +148,6 @@ for (const side of ["l", "r"]) {
 }
 
 const mocapGestureClips = {
-  idle: "Idle_Subtle",
   wave: "Greeting",
   nod: "Head Nod",
   shake: "Reject",
@@ -143,6 +155,15 @@ const mocapGestureClips = {
   shy: "Idle Listening",
   celebrate: "Victory",
   surprised: "Confused",
+  bow: "Bow",
+  dance: "Dance Body Roll",
+  meditate: "Meditate",
+  angry: "Angry",
+  confused: "Confused",
+  listen: "Idle Listening",
+  cheer: "Victory Fist Pump",
+  shiver: "Shivering",
+  tired: "Tired Hunched",
 };
 
 function emitStatus(status, detail = "") {
@@ -241,6 +262,7 @@ async function ensureRenderer() {
     state.gaze.targetX = 0;
     state.gaze.targetY = 0;
   });
+  host.addEventListener("pointerdown", beginAvatarDrag);
   window.addEventListener("companion-speech-start", () => {
     state.speaking = true;
   });
@@ -570,7 +592,7 @@ async function loadBundledMocapActions() {
       const clip = retargetMesh2MotionClip(sourceClip, gltf.scene, state.vrm);
       if (!clip.tracks.length) continue;
       const action = state.mixer.clipAction(clip);
-      const loop = gesture === "idle" || gesture === "shy";
+      const loop = gesture === "idle";
       action.enabled = true;
       action.clampWhenFinished = !loop;
       action.zeroSlopeAtStart = true;
@@ -608,6 +630,14 @@ async function loadModel(modelUrl, animations = []) {
   state.mixer = new THREE.AnimationMixer(vrm.scene);
   state.mixer.addEventListener("finished", (event) => {
     if (event.action !== state.activeVrmaAction) return;
+    if (state.activeCombo) {
+      if (state.comboQueue.length) {
+        playNextComboStep();
+        return;
+      }
+      state.activeCombo = null;
+      delete document.documentElement.dataset.companionMotionCombo;
+    }
     state.gesture = "idle";
     emitGesture("idle", "mixer");
     playVrmaGesture("idle");
@@ -624,8 +654,13 @@ async function loadModel(modelUrl, animations = []) {
   await loadBundledMocapActions();
   await loadAnimations(animations);
   emitStatus("ready", state.profile?.name || "VRM角色已就绪");
-  const previewGesture = new URLSearchParams(window.location.search).get("gesture");
-  if (gestureDurations[previewGesture]) {
+  const query = new URLSearchParams(window.location.search);
+  const previewCombo = query.get("combo");
+  const previewGesture = query.get("gesture");
+  const combo = state.motionCombos.find((item) => item.id === previewCombo);
+  if (combo) {
+    setTimeout(() => startMotionCombo(combo), 350);
+  } else if (gestureDurations[previewGesture]) {
     setTimeout(() => triggerGesture(previewGesture, "preview", true), 350);
   }
 }
@@ -663,6 +698,7 @@ async function loadAnimations(profiles) {
 
 function fitCamera() {
   if (!state.vrm || !state.camera) return;
+  state.vrm.scene.position.set(0, 0, 0);
   state.vrm.scene.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(state.vrm.scene);
   const size = box.getSize(new THREE.Vector3());
@@ -687,6 +723,11 @@ function fitCamera() {
   state.camera.updateProjectionMatrix();
   state.lookAtBase.set(center.x, targetY, center.z + Math.max(0.8, distance * 0.35));
   state.lookAtTarget?.position.copy(state.lookAtBase);
+  state.vrm.scene.position.set(
+    Number(settings.stage_x) || 0,
+    Number(settings.stage_y) || 0,
+    0,
+  );
   document.documentElement.dataset.companionVrmBounds = [size.x, size.y, size.z]
     .map((value) => value.toFixed(2))
     .join("×");
@@ -699,6 +740,66 @@ function applyRendererVisibility(useVrm) {
   document.documentElement.dataset.companionRenderer = state.active ? "vrm" : "live2d";
 }
 
+const avatarRaycaster = new THREE.Raycaster();
+const avatarPointer = new THREE.Vector2();
+
+function pointerHitsAvatar(event) {
+  if (!state.active || !state.vrm || !state.camera || !state.host) return false;
+  const rect = state.host.getBoundingClientRect();
+  avatarPointer.set(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  avatarRaycaster.setFromCamera(avatarPointer, state.camera);
+  return avatarRaycaster.intersectObject(state.vrm.scene, true).length > 0;
+}
+
+function beginAvatarDrag(event) {
+  if (event.button !== 0 || !pointerHitsAvatar(event)) return;
+  event.preventDefault();
+  state.drag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    sceneX: state.vrm.scene.position.x,
+    sceneY: state.vrm.scene.position.y,
+  };
+  state.host.style.cursor = "grabbing";
+  document.documentElement.dataset.companionAvatarDrag = "active";
+  window.addEventListener("pointermove", moveAvatarDrag);
+  window.addEventListener("pointerup", endAvatarDrag, { once: true });
+}
+
+function moveAvatarDrag(event) {
+  if (!state.drag || !state.camera || !state.host || !state.vrm) return;
+  const rect = state.host.getBoundingClientRect();
+  const distance = state.camera.position.distanceTo(state.lookAtBase);
+  const worldHeight =
+    2 * distance * Math.tan(THREE.MathUtils.degToRad(state.camera.fov * 0.5));
+  const worldPerPixel = worldHeight / Math.max(1, rect.height);
+  const nextX = state.drag.sceneX + (event.clientX - state.drag.startX) * worldPerPixel;
+  const nextY = state.drag.sceneY - (event.clientY - state.drag.startY) * worldPerPixel;
+  state.vrm.scene.position.x = THREE.MathUtils.clamp(nextX, -3, 3);
+  state.vrm.scene.position.y = THREE.MathUtils.clamp(nextY, -3, 3);
+}
+
+function endAvatarDrag() {
+  window.removeEventListener("pointermove", moveAvatarDrag);
+  if (!state.drag || !state.vrm) return;
+  state.drag = null;
+  state.host.style.cursor = "";
+  document.documentElement.dataset.companionAvatarDrag = "saved";
+  const stageX = Number(state.vrm.scene.position.x.toFixed(4));
+  const stageY = Number(state.vrm.scene.position.y.toFixed(4));
+  state.settings.stage_x = stageX;
+  state.settings.stage_y = stageY;
+  fetch(`/api/companion/avatar/${encodeURIComponent(state.confUid)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stage_x: stageX, stage_y: stageY }),
+  }).catch((error) => console.warn("[Companion VRM] 角色位置保存失败", error));
+}
+
 async function selectCharacter(confUid) {
   state.confUid = confUid;
   try {
@@ -707,6 +808,7 @@ async function selectCharacter(confUid) {
     const data = await response.json();
     state.settings = data.settings;
     state.profile = data.active;
+    state.motionCombos = data.motion_combos || [];
     if (data.settings?.renderer !== "vrm" || !data.model_url) {
       applyRendererVisibility(false);
       emitStatus("live2d", "使用Live2D渲染");
@@ -756,7 +858,7 @@ function chooseSemanticGesture(text, emotion) {
   return null;
 }
 
-function playVrmaGesture(name) {
+function playVrmaGesture(name, forceOnce = false) {
   const group = state.vrmaActions.get(name);
   const mocap = state.mocapActions.get(name);
   const builtin = state.builtinActions.get(name);
@@ -769,10 +871,13 @@ function playVrmaGesture(name) {
   if (previous === action && name === "idle" && action.isRunning()) return true;
   action.reset();
   action.enabled = true;
-  action.clampWhenFinished = !profile.loop;
+  action.clampWhenFinished = forceOnce || !profile.loop;
   action.zeroSlopeAtStart = true;
   action.zeroSlopeAtEnd = true;
-  action.setLoop(profile.loop ? THREE.LoopRepeat : THREE.LoopOnce, profile.loop ? Infinity : 1);
+  action.setLoop(
+    profile.loop && !forceOnce ? THREE.LoopRepeat : THREE.LoopOnce,
+    profile.loop && !forceOnce ? Infinity : 1,
+  );
   if (previous && previous !== action) {
     action.play().crossFadeFrom(previous, name === "idle" ? 0.34 : 0.24, false);
   } else {
@@ -785,6 +890,22 @@ function playVrmaGesture(name) {
   state.gestureDuration = Math.max(0.5, action.getClip().duration);
   emitGesture(name, state.motionSource);
   return true;
+}
+
+function playNextComboStep() {
+  const step = state.comboQueue.shift();
+  if (!step) return false;
+  return playVrmaGesture(step, true);
+}
+
+function startMotionCombo(combo) {
+  if (!combo?.enabled || !Array.isArray(combo.steps) || combo.steps.length < 2) {
+    return false;
+  }
+  state.activeCombo = combo;
+  state.comboQueue = combo.steps.slice(0, 5);
+  document.documentElement.dataset.companionMotionCombo = combo.name || combo.id;
+  return playNextComboStep();
 }
 
 function triggerGesture(name, sourceText = "", force = false) {
@@ -808,6 +929,10 @@ function triggerGesture(name, sourceText = "", force = false) {
   }
   state.lastGesture = name;
   state.gestureCooldownUntil = now + 1250;
+  const combo = state.motionCombos.find(
+    (item) => item.enabled !== false && item.trigger === name,
+  );
+  if (combo && startMotionCombo(combo)) return true;
   if (playVrmaGesture(name)) return true;
   return false;
 }

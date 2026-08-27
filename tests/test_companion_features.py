@@ -82,10 +82,20 @@ class CompanionFeatureTests(unittest.TestCase):
                 "gesture_intensity": 8,
                 "gesture_frequency": -2,
                 "gaze_enabled": False,
+                "stage_x": 99,
+                "stage_y": -99,
             }
             state["vrm_models"]["alice"] = [{"id": "model1", "name": "Alice 3D"}]
             state["vrm_animations"]["alice"] = [
                 {"id": "motion1", "name": "Wave", "gesture": "wave"}
+            ]
+            state["motion_combos"]["alice"] = [
+                {
+                    "id": "combo1",
+                    "name": "Formal hello",
+                    "trigger": "wave",
+                    "steps": ["wave", "nod", "bow"],
+                }
             ]
             companion_routes._save_state(state)
             settings = companion_routes.get_avatar_settings("alice")
@@ -97,6 +107,8 @@ class CompanionFeatureTests(unittest.TestCase):
             self.assertEqual(settings["gesture_intensity"], 1.0)
             self.assertEqual(settings["gesture_frequency"], 0.0)
             self.assertFalse(settings["gaze_enabled"])
+            self.assertEqual(settings["stage_x"], 3.0)
+            self.assertEqual(settings["stage_y"], -3.0)
             self.assertEqual(
                 companion_routes.get_avatar_settings("bob")["renderer"], "live2d"
             )
@@ -105,6 +117,10 @@ class CompanionFeatureTests(unittest.TestCase):
             )
             self.assertEqual(
                 companion_routes.get_vrma_profiles("alice")[0]["gesture"], "wave"
+            )
+            self.assertEqual(
+                companion_routes.get_motion_combos("alice")[0]["steps"],
+                ["wave", "nod", "bow"],
             )
 
     def test_character_backup_includes_vrma_files(self):
