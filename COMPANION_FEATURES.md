@@ -108,6 +108,10 @@ configuration system. Removing a character archives its YAML under
   thinking language and emotions to wave, nod, shake, thoughtful tilt,
   emphasis, shy, surprised and open-happy gestures. Per-character style,
   intensity and frequency controls keep movement from becoming repetitive.
+- Built-in gestures are multi-bone quaternion keyframe clips with anticipation,
+  action, overshoot and settle phases. A shared Three.js `AnimationMixer`
+  cross-fades gestures and VRMA clips into the breathing idle rather than
+  directly overwriting Euler angles every frame.
 - Pointer-aware gaze uses the VRM look-at system and eases back to the camera
   when the pointer leaves the stage.
 - Optional `.vrma` files can be bound to semantic gestures. They cross-fade in,

@@ -34,6 +34,7 @@ const state = {
   lastGesture: "",
   mixer: null,
   vrmaActions: new Map(),
+  builtinActions: new Map(),
   activeVrmaAction: null,
   gaze: { x: 0, y: 0, targetX: 0, targetY: 0 },
   lookAtTarget: null,
@@ -251,7 +252,194 @@ function disposeCurrentModel() {
   state.mixer?.stopAllAction();
   state.mixer = null;
   state.vrmaActions.clear();
+  state.builtinActions.clear();
   state.activeVrmaAction = null;
+}
+
+const basePose = {
+  head: [0, 0, 0],
+  neck: [0, 0, 0],
+  chest: [0, 0, 0],
+  spine: [0, 0, 0],
+  leftShoulder: [0, 0, 0],
+  rightShoulder: [0, 0, 0],
+  leftUpperArm: [-0.08, 0, 1.22],
+  rightUpperArm: [-0.08, 0, -1.22],
+  leftLowerArm: [0, 0, 0.12],
+  rightLowerArm: [0, 0, -0.12],
+  leftHand: [0, 0, 0],
+  rightHand: [0, 0, 0],
+};
+
+function poseWith(overrides = {}) {
+  const settings = state.settings || {};
+  const styleFactor = settings.action_style === "subtle" ? 0.72 : settings.action_style === "expressive" ? 1.16 : 1;
+  const intensity = THREE.MathUtils.clamp(
+    (Number(settings.gesture_intensity) || 0) * styleFactor,
+    0,
+    1.15,
+  );
+  return Object.fromEntries(
+    Object.entries(basePose).map(([bone, rotation]) => [
+      bone,
+      overrides[bone]
+        ? rotation.map(
+            (value, index) => value + (overrides[bone][index] - value) * intensity,
+          )
+        : rotation,
+    ]),
+  );
+}
+
+// Mirrors the official three-vrm animation example: normalized humanoid bones
+// are driven by QuaternionKeyframeTracks and blended by a single AnimationMixer.
+function createPoseClip(name, duration, keyframes, { loop = false } = {}) {
+  const tracks = [];
+  const boneNames = new Set(keyframes.flatMap((frame) => Object.keys(frame.pose)));
+  for (const boneName of boneNames) {
+    const node = state.vrm?.humanoid?.getNormalizedBoneNode(boneName);
+    if (!node) continue;
+    const times = [];
+    const values = [];
+    for (const frame of keyframes) {
+      const rotation = frame.pose[boneName];
+      if (!rotation) continue;
+      const quaternion = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(rotation[0], rotation[1], rotation[2], "XYZ"),
+      );
+      times.push(frame.time);
+      values.push(...quaternion.toArray());
+    }
+    if (times.length >= 2) {
+      tracks.push(
+        new THREE.QuaternionKeyframeTrack(
+          `${node.name}.quaternion`,
+          times,
+          values,
+          THREE.InterpolateLinear,
+        ),
+      );
+    }
+  }
+
+  const hips = state.vrm?.humanoid?.getNormalizedBoneNode("hips");
+  const positionFrames = keyframes.filter((frame) => frame.hips);
+  if (hips && positionFrames.length >= 2) {
+    const rest = hips.position.clone();
+    tracks.push(
+      new THREE.VectorKeyframeTrack(
+        `${hips.name}.position`,
+        positionFrames.map((frame) => frame.time),
+        positionFrames.flatMap((frame) => [
+          rest.x + (frame.hips[0] || 0),
+          rest.y + (frame.hips[1] || 0),
+          rest.z + (frame.hips[2] || 0),
+        ]),
+        THREE.InterpolateSmooth,
+      ),
+    );
+  }
+
+  const clip = new THREE.AnimationClip(name, duration, tracks);
+  const action = state.mixer.clipAction(clip);
+  action.enabled = true;
+  action.clampWhenFinished = false;
+  action.zeroSlopeAtStart = true;
+  action.zeroSlopeAtEnd = true;
+  action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  state.builtinActions.set(name, { action, profile: { loop, name, gesture: name } });
+}
+
+function prepareBuiltinAnimations() {
+  const base = poseWith();
+  createPoseClip(
+    "idle",
+    6.4,
+    [
+      { time: 0, pose: base, hips: [0, 0, 0] },
+      { time: 1.6, pose: poseWith({ chest: [-0.008, 0.008, 0], head: [0.008, -0.012, 0.006] }), hips: [0, 0.003, 0] },
+      { time: 3.2, pose: poseWith({ chest: [0.006, -0.006, 0], head: [-0.004, 0.014, -0.005] }), hips: [0, 0, 0] },
+      { time: 4.8, pose: poseWith({ chest: [-0.006, 0.004, 0], head: [0.006, 0.006, 0.004] }), hips: [0, 0.002, 0] },
+      { time: 6.4, pose: base, hips: [0, 0, 0] },
+    ],
+    { loop: true },
+  );
+
+  createPoseClip("wave", 2.75, [
+    { time: 0, pose: base },
+    { time: 0.16, pose: poseWith({ chest: [0, 0.025, 0], head: [0, -0.035, 0] }) },
+    { time: 0.58, pose: poseWith({ rightShoulder: [0, 0.06, -0.1], rightUpperArm: [-0.27, -0.24, -0.14], rightLowerArm: [0.05, 0, 1.58], rightHand: [0.04, 0.08, -0.18], chest: [0, -0.045, 0.012], spine: [0, -0.018, 0], head: [0, 0.05, 0.018] }) },
+    { time: 0.92, pose: poseWith({ rightShoulder: [0, 0.055, -0.1], rightUpperArm: [-0.29, -0.22, -0.1], rightLowerArm: [0.12, 0, 1.72], rightHand: [0.03, 0.16, 0.3], chest: [0, -0.05, 0.014], spine: [0, -0.02, 0], head: [0, 0.055, 0.015] }) },
+    { time: 1.22, pose: poseWith({ rightShoulder: [0, 0.05, -0.1], rightUpperArm: [-0.27, -0.24, -0.13], rightLowerArm: [-0.1, 0, 1.6], rightHand: [-0.03, -0.15, -0.3], chest: [0, -0.045, 0.012], spine: [0, -0.018, 0], head: [0, 0.045, 0.012] }) },
+    { time: 1.52, pose: poseWith({ rightShoulder: [0, 0.055, -0.1], rightUpperArm: [-0.29, -0.22, -0.1], rightLowerArm: [0.11, 0, 1.72], rightHand: [0.03, 0.16, 0.3], chest: [0, -0.05, 0.014], spine: [0, -0.02, 0], head: [0, 0.055, 0.015] }) },
+    { time: 1.82, pose: poseWith({ rightShoulder: [0, 0.05, -0.1], rightUpperArm: [-0.27, -0.24, -0.13], rightLowerArm: [-0.08, 0, 1.6], rightHand: [-0.03, -0.13, -0.26], chest: [0, -0.045, 0.012], spine: [0, -0.018, 0], head: [0, 0.045, 0.012] }) },
+    { time: 2.18, pose: poseWith({ rightUpperArm: [-0.17, -0.1, -0.5], rightLowerArm: [0.02, 0, 0.88], chest: [0, -0.02, 0], head: [0, 0.025, 0] }) },
+    { time: 2.75, pose: base },
+  ]);
+
+  createPoseClip("nod", 1.65, [
+    { time: 0, pose: base },
+    { time: 0.18, pose: poseWith({ head: [-0.035, 0, 0], chest: [-0.008, 0, 0] }) },
+    { time: 0.48, pose: poseWith({ head: [0.15, 0, 0], neck: [0.035, 0, 0], chest: [0.018, 0, 0] }) },
+    { time: 0.72, pose: poseWith({ head: [-0.055, 0, 0], neck: [-0.012, 0, 0] }) },
+    { time: 1.02, pose: poseWith({ head: [0.105, 0, 0], neck: [0.02, 0, 0], chest: [0.01, 0, 0] }) },
+    { time: 1.28, pose: poseWith({ head: [-0.025, 0, 0] }) },
+    { time: 1.65, pose: base },
+  ]);
+
+  createPoseClip("shake", 1.8, [
+    { time: 0, pose: base },
+    { time: 0.18, pose: poseWith({ head: [0, 0.04, 0], chest: [0, -0.008, 0] }) },
+    { time: 0.48, pose: poseWith({ head: [0, -0.17, -0.008], neck: [0, -0.035, 0], chest: [0, 0.025, 0] }) },
+    { time: 0.78, pose: poseWith({ head: [0, 0.18, 0.008], neck: [0, 0.035, 0], chest: [0, -0.025, 0] }) },
+    { time: 1.08, pose: poseWith({ head: [0, -0.13, -0.006], neck: [0, -0.025, 0] }) },
+    { time: 1.38, pose: poseWith({ head: [0, 0.07, 0.004] }) },
+    { time: 1.8, pose: base },
+  ]);
+
+  createPoseClip("think", 3.2, [
+    { time: 0, pose: base },
+    { time: 0.32, pose: poseWith({ head: [-0.015, 0.025, -0.025], chest: [0, -0.012, 0] }) },
+    { time: 0.85, pose: poseWith({ head: [0.045, -0.105, 0.105], neck: [0.018, -0.028, 0.025], chest: [0.018, -0.035, 0.01], rightShoulder: [0, 0, -0.025] }) },
+    { time: 2.25, pose: poseWith({ head: [0.035, -0.09, 0.095], neck: [0.012, -0.025, 0.022], chest: [0.014, -0.03, 0.008], rightShoulder: [0, 0, -0.02] }) },
+    { time: 2.72, pose: poseWith({ head: [-0.018, 0.018, -0.018], chest: [-0.006, 0.01, 0] }) },
+    { time: 3.2, pose: base },
+  ]);
+
+  createPoseClip("shy", 2.8, [
+    { time: 0, pose: base },
+    { time: 0.4, pose: poseWith({ head: [0.04, 0.025, -0.025], chest: [0.025, 0, 0], leftShoulder: [0, 0, 0.025], rightShoulder: [0, 0, -0.025] }) },
+    { time: 0.95, pose: poseWith({ head: [0.11, -0.045, 0.065], neck: [0.025, -0.012, 0.015], chest: [0.06, 0.018, 0], leftUpperArm: [-0.04, 0.06, 1.31], rightUpperArm: [-0.04, -0.06, -1.31] }) },
+    { time: 2.05, pose: poseWith({ head: [0.095, -0.035, 0.055], neck: [0.02, -0.01, 0.012], chest: [0.052, 0.015, 0], leftUpperArm: [-0.04, 0.05, 1.3], rightUpperArm: [-0.04, -0.05, -1.3] }) },
+    { time: 2.8, pose: base },
+  ]);
+
+  createPoseClip("emphasize", 1.95, [
+    { time: 0, pose: base },
+    { time: 0.2, pose: poseWith({ chest: [0, 0.018, 0], head: [0, -0.018, 0] }) },
+    { time: 0.58, pose: poseWith({ rightShoulder: [0, 0.025, -0.035], rightUpperArm: [-0.15, -0.14, -0.72], rightLowerArm: [0.05, 0.08, 0.22], rightHand: [0.06, 0, -0.08], chest: [-0.015, -0.055, 0], head: [0.01, 0.045, 0.01] }) },
+    { time: 0.94, pose: poseWith({ rightUpperArm: [-0.13, -0.1, -0.82], rightLowerArm: [0.03, 0.05, 0.15], chest: [0, -0.028, 0], head: [0, 0.02, 0] }) },
+    { time: 1.28, pose: poseWith({ rightUpperArm: [-0.16, -0.12, -0.7], rightLowerArm: [0.05, 0.08, 0.24], chest: [-0.012, -0.05, 0], head: [0.008, 0.04, 0.008] }) },
+    { time: 1.95, pose: base },
+  ]);
+
+  createPoseClip("celebrate", 2.65, [
+    { time: 0, pose: base, hips: [0, 0, 0] },
+    { time: 0.22, pose: poseWith({ chest: [0.025, 0, 0], head: [0.025, 0, 0] }), hips: [0, -0.008, 0] },
+    { time: 0.72, pose: poseWith({ leftShoulder: [0, 0.02, 0.06], rightShoulder: [0, -0.025, -0.07], leftUpperArm: [-0.18, 0.14, 0.64], rightUpperArm: [-0.14, -0.08, -0.82], leftLowerArm: [0.08, -0.03, 0.5], rightLowerArm: [0.02, 0.04, -0.18], leftHand: [0, -0.1, 0.12], rightHand: [0, 0.05, -0.05], chest: [-0.055, -0.035, -0.012], spine: [-0.018, -0.012, 0], head: [-0.035, 0.035, 0.025] }), hips: [-0.006, 0.012, 0] },
+    { time: 1.15, pose: poseWith({ leftUpperArm: [-0.16, 0.1, 0.72], rightUpperArm: [-0.18, -0.13, -0.66], leftLowerArm: [0.04, 0, 0.34], rightLowerArm: [0.04, 0, -0.3], chest: [-0.04, 0.02, 0.01], head: [-0.02, -0.02, -0.018] }), hips: [0.004, 0.002, 0] },
+    { time: 1.58, pose: poseWith({ leftShoulder: [0, 0.015, 0.05], rightShoulder: [0, -0.02, -0.065], leftUpperArm: [-0.17, 0.12, 0.66], rightUpperArm: [-0.15, -0.09, -0.78], leftLowerArm: [0.06, -0.02, 0.46], rightLowerArm: [0.03, 0.03, -0.2], chest: [-0.05, -0.025, -0.01], head: [-0.03, 0.025, 0.02] }), hips: [-0.004, 0.009, 0] },
+    { time: 2.08, pose: poseWith({ leftUpperArm: [-0.1, 0.04, 0.98], rightUpperArm: [-0.1, -0.04, -0.98], chest: [-0.012, 0, 0], head: [0.005, 0, 0] }), hips: [0, 0, 0] },
+    { time: 2.65, pose: base, hips: [0, 0, 0] },
+  ]);
+
+  createPoseClip("surprised", 1.7, [
+    { time: 0, pose: base },
+    { time: 0.16, pose: poseWith({ head: [0.035, 0, 0], chest: [0.025, 0, 0] }) },
+    { time: 0.48, pose: poseWith({ head: [-0.07, 0, 0], neck: [-0.015, 0, 0], chest: [-0.045, 0, 0], leftShoulder: [0, 0, 0.04], rightShoulder: [0, 0, -0.04], leftUpperArm: [-0.1, 0.04, 0.97], rightUpperArm: [-0.1, -0.04, -0.97] }) },
+    { time: 1.05, pose: poseWith({ head: [-0.045, 0, 0], chest: [-0.025, 0, 0], leftUpperArm: [-0.09, 0.02, 1.05], rightUpperArm: [-0.09, -0.02, -1.05] }) },
+    { time: 1.7, pose: base },
+  ]);
 }
 
 async function loadModel(modelUrl, animations = []) {
@@ -272,16 +460,16 @@ async function loadModel(modelUrl, animations = []) {
   state.mixer = new THREE.AnimationMixer(vrm.scene);
   state.mixer.addEventListener("finished", (event) => {
     if (event.action !== state.activeVrmaAction) return;
-    state.activeVrmaAction?.fadeOut(0.2);
-    state.activeVrmaAction = null;
     state.gesture = "idle";
-    emitGesture("idle", "vrma");
+    emitGesture("idle", "mixer");
     playVrmaGesture("idle");
   });
+  prepareBuiltinAnimations();
   vrm.scene.rotation.y = Math.PI;
   state.scene.add(vrm.scene);
   state.elapsed = 0;
-  updateProceduralPose(0, performance.now());
+  playVrmaGesture("idle");
+  state.mixer.update(0);
   vrm.update(0);
   fitCamera();
   applyRendererVisibility(true);
@@ -421,22 +609,30 @@ function chooseSemanticGesture(text, emotion) {
 
 function playVrmaGesture(name) {
   const group = state.vrmaActions.get(name);
-  if (!group?.length || !state.mixer) return false;
-  const index = Math.abs(Math.floor(state.elapsed * 10)) % group.length;
-  const { action, profile } = group[index];
-  if (state.activeVrmaAction && state.activeVrmaAction !== action) {
-    state.activeVrmaAction.fadeOut(0.18);
-  }
+  const builtin = state.builtinActions.get(name);
+  if ((!group?.length && !builtin) || !state.mixer) return false;
+  const selected = group?.length
+    ? group[Math.abs(Math.floor(state.elapsed * 10)) % group.length]
+    : builtin;
+  const { action, profile } = selected;
+  const previous = state.activeVrmaAction;
+  if (previous === action && name === "idle" && action.isRunning()) return true;
   action.reset();
   action.enabled = true;
   action.clampWhenFinished = !profile.loop;
+  action.zeroSlopeAtStart = true;
+  action.zeroSlopeAtEnd = true;
   action.setLoop(profile.loop ? THREE.LoopRepeat : THREE.LoopOnce, profile.loop ? Infinity : 1);
-  action.fadeIn(0.2).play();
+  if (previous && previous !== action) {
+    action.play().crossFadeFrom(previous, name === "idle" ? 0.34 : 0.24, false);
+  } else {
+    action.fadeIn(0.24).play();
+  }
   state.activeVrmaAction = action;
   state.gesture = name;
   state.gestureStartedAt = performance.now();
   state.gestureDuration = Math.max(0.5, action.getClip().duration);
-  emitGesture(name, "vrma");
+  emitGesture(name, group?.length ? "vrma" : "builtin");
   return true;
 }
 
@@ -450,18 +646,19 @@ function triggerGesture(name, sourceText = "", force = false) {
   if (!force && frequency <= 0) return false;
   const strongGesture = ["wave", "nod", "shake", "celebrate", "surprised"].includes(name);
   if (!force && !strongGesture && hashRatio(`${sourceText}:${name}`) > frequency) return false;
+  const automaticEmotion = {
+    wave: "happy",
+    celebrate: "happy",
+    shy: "relaxed",
+    surprised: "surprised",
+  }[name];
+  if (automaticEmotion && now >= state.emotionUntil) {
+    setEmotion(automaticEmotion, (gestureDurations[name] || 2) * 1000);
+  }
   state.lastGesture = name;
   state.gestureCooldownUntil = now + 1250;
   if (playVrmaGesture(name)) return true;
-  if (state.activeVrmaAction) {
-    state.activeVrmaAction.fadeOut(0.18);
-    state.activeVrmaAction = null;
-  }
-  state.gesture = name;
-  state.gestureStartedAt = now;
-  state.gestureDuration = gestureDurations[name];
-  emitGesture(name, "procedural");
-  return true;
+  return false;
 }
 
 function updateExpressions(now) {
@@ -477,113 +674,6 @@ function updateExpressions(now) {
   if (state.lipEngine) {
     const weights = state.lipEngine.weights;
     for (const viseme of VISEME_NAMES) manager.setValue(viseme, weights[viseme] || 0);
-  }
-}
-
-function updateProceduralPose(elapsed, now) {
-  if (!state.vrm) return;
-  const head = state.vrm.humanoid?.getNormalizedBoneNode("head");
-  const chest = state.vrm.humanoid?.getNormalizedBoneNode("chest");
-  const hips = state.vrm.humanoid?.getNormalizedBoneNode("hips");
-  const leftUpperArm = state.vrm.humanoid?.getNormalizedBoneNode("leftUpperArm");
-  const rightUpperArm = state.vrm.humanoid?.getNormalizedBoneNode("rightUpperArm");
-  const leftLowerArm = state.vrm.humanoid?.getNormalizedBoneNode("leftLowerArm");
-  const rightLowerArm = state.vrm.humanoid?.getNormalizedBoneNode("rightLowerArm");
-  const expressive = performance.now() < state.emotionUntil ? state.emotion : "neutral";
-  const pulse = Math.sin(elapsed * 4.2);
-  const armLift = expressive === "happy" ? 0.16 + pulse * 0.035 : 0;
-  const guarded = expressive === "sad" ? 0.1 : 0;
-  const settings = state.settings || {};
-  const styleFactor = settings.action_style === "subtle" ? 0.72 : settings.action_style === "expressive" ? 1.2 : 1;
-  const intensity = THREE.MathUtils.clamp(
-    (Number(settings.gesture_intensity) || 0) * styleFactor,
-    0,
-    1.25,
-  );
-  let gesturePhase = 0;
-  let gestureEnvelope = 0;
-  if (state.gesture !== "idle" && state.gestureDuration > 0) {
-    gesturePhase = (now - state.gestureStartedAt) / (state.gestureDuration * 1000);
-    if (gesturePhase >= 1) {
-      state.gesture = "idle";
-      state.gestureDuration = 0;
-      emitGesture("idle");
-      gesturePhase = 0;
-    } else {
-      gestureEnvelope = Math.sin(Math.PI * THREE.MathUtils.clamp(gesturePhase, 0, 1));
-    }
-  }
-  if (head) {
-    head.rotation.y = Math.sin(elapsed * 0.37) * 0.035;
-    head.rotation.z = Math.sin(elapsed * 0.23) * 0.018 + (expressive === "sad" ? 0.07 : 0);
-    head.rotation.x = expressive === "sad" ? 0.12 : expressive === "surprised" ? -0.05 : 0;
-  }
-  if (chest) {
-    chest.rotation.x = Math.sin(elapsed * 1.25) * 0.012 + (expressive === "angry" ? -0.045 : guarded);
-  }
-  if (hips) hips.position.y = Math.sin(elapsed * 1.25) * 0.004;
-  if (leftUpperArm) {
-    leftUpperArm.rotation.z = 1.22 - armLift + Math.sin(elapsed * 0.7) * 0.015;
-    leftUpperArm.rotation.x = -0.08;
-  }
-  if (rightUpperArm) {
-    rightUpperArm.rotation.z = -1.22 + armLift - Math.sin(elapsed * 0.7) * 0.015;
-    rightUpperArm.rotation.x = -0.08;
-  }
-  if (leftLowerArm) leftLowerArm.rotation.z = 0.12;
-  if (rightLowerArm) rightLowerArm.rotation.z = -0.12;
-
-  const amount = gestureEnvelope * intensity;
-  switch (state.gesture) {
-    case "wave":
-      if (rightUpperArm) {
-        rightUpperArm.rotation.z += 1.28 * amount;
-        rightUpperArm.rotation.x -= 0.22 * amount;
-      }
-      if (rightLowerArm) {
-        rightLowerArm.rotation.z += 1.5 * amount;
-        rightLowerArm.rotation.x = Math.sin(gesturePhase * Math.PI * 8) * 0.22 * amount;
-      }
-      break;
-    case "nod":
-      if (head) head.rotation.x += Math.sin(gesturePhase * Math.PI * 4) * 0.14 * amount;
-      break;
-    case "shake":
-      if (head) head.rotation.y += Math.sin(gesturePhase * Math.PI * 4) * 0.18 * amount;
-      break;
-    case "think":
-      if (head) {
-        head.rotation.z += 0.11 * amount;
-        head.rotation.y -= 0.1 * amount;
-        head.rotation.x += 0.035 * amount;
-      }
-      if (rightUpperArm) rightUpperArm.rotation.z += 0.12 * amount;
-      if (rightLowerArm) rightLowerArm.rotation.z += 0.1 * amount;
-      if (chest) chest.rotation.y = -0.025 * amount;
-      break;
-    case "shy":
-      if (head) head.rotation.x += 0.1 * amount;
-      if (leftUpperArm) leftUpperArm.rotation.z -= 0.15 * amount;
-      if (rightUpperArm) rightUpperArm.rotation.z += 0.15 * amount;
-      if (chest) chest.rotation.x += 0.06 * amount;
-      break;
-    case "celebrate":
-      if (leftUpperArm) leftUpperArm.rotation.z -= 0.62 * amount;
-      if (rightUpperArm) rightUpperArm.rotation.z += 0.62 * amount;
-      if (chest) chest.rotation.x -= 0.035 * amount;
-      break;
-    case "surprised":
-      if (leftUpperArm) leftUpperArm.rotation.z -= 0.26 * amount;
-      if (rightUpperArm) rightUpperArm.rotation.z += 0.26 * amount;
-      if (head) head.rotation.x -= 0.06 * amount;
-      break;
-    case "emphasize": {
-      const beat = (0.5 + 0.5 * Math.sin(gesturePhase * Math.PI * 4)) * amount;
-      if (rightUpperArm) rightUpperArm.rotation.z += 0.42 * beat;
-      if (rightLowerArm) rightLowerArm.rotation.z += 0.3 * beat;
-      if (chest) chest.rotation.y = -0.035 * beat;
-      break;
-    }
   }
 }
 
@@ -606,7 +696,6 @@ function renderFrame(now) {
   state.elapsed += delta;
   if (!state.active || !state.vrm) return;
   state.mixer?.update(delta);
-  if (!state.activeVrmaAction) updateProceduralPose(state.elapsed, now);
   updateGaze(delta);
   updateExpressions(now);
   state.vrm.update(delta);
