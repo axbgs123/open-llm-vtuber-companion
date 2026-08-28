@@ -12,6 +12,12 @@ const emotionAliases = {
   surprise: "surprised",
 };
 
+const allowedGestures = new Set([
+  "wave", "nod", "shake", "think", "shy", "emphasize", "celebrate",
+  "surprised", "bow", "dance", "meditate", "angry", "confused",
+  "listen", "cheer", "shiver", "tired",
+]);
+
 function hashRatio(text) {
   let hash = 2166136261;
   for (const char of String(text)) {
@@ -44,6 +50,32 @@ export function normalizeEmotion(emotion) {
 
 export function extractInlineEmotion(text) {
   return String(text || "").match(INLINE_EMOTION_PATTERN)?.[1]?.toLowerCase() || "";
+}
+
+export function resolveAssistantMotion(text, actions = {}) {
+  const supplied = actions?.motion;
+  if (supplied && typeof supplied === "object") {
+    const gesture = String(supplied.gesture || "");
+    const sequence = Array.isArray(supplied.sequence)
+      ? supplied.sequence.map(String).filter((item) => allowedGestures.has(item)).slice(0, 5)
+      : null;
+    if (allowedGestures.has(gesture)) {
+      return {
+        reason: String(supplied.reason || "structured-intent").slice(0, 80),
+        emotion: normalizeEmotion(supplied.emotion || "neutral"),
+        intensity: Math.max(1, Math.min(3, Number(supplied.intensity) || 1)),
+        gestures: [gesture],
+        gesture,
+        sequence: sequence?.length >= 2 ? sequence : null,
+        explicit: true,
+        structured: true,
+      };
+    }
+  }
+  const expressions = Array.isArray(actions?.expressions) ? actions.expressions : [];
+  const requested = expressions.find((item) => typeof item === "string") ||
+    extractInlineEmotion(text);
+  return classifyAssistantMotion(text, requested || "neutral");
 }
 
 export function classifyAssistantMotion(text, suppliedEmotion = "") {

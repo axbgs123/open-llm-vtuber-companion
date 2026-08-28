@@ -9,6 +9,7 @@ import { WLipSyncEngine, VISEME_NAMES } from "three-vrm-lip-sync";
 import {
   classifyAssistantMotion,
   extractInlineEmotion,
+  resolveAssistantMotion,
 } from "./semantic_motion.js";
 
 const state = {
@@ -212,7 +213,8 @@ function handleMessage(message) {
     const requested =
       expressions.find((item) => typeof item === "string") ||
       extractInlineEmotion(text);
-    const motion = chooseSemanticMotion(text, requested || "neutral");
+    const explicitMotion = resolveAssistantMotion(text, message.actions || {});
+    const motion = explicitMotion || chooseSemanticMotion(text, requested || "neutral");
     if (requested && !motion) setEmotion(requested, 5000);
     state.lastAssistantIntentText = text;
     state.lastAssistantIntentAt = performance.now();
@@ -1455,7 +1457,7 @@ function headPenetration(point, radius) {
 function applySelfCollisionAvoidance() {
   if (
     state.gesture === "idle" ||
-    !["mocap", "vrma"].includes(state.motionSource) ||
+    !["mocap", "vrma", "builtin"].includes(state.motionSource) ||
     !state.camera
   ) {
     document.documentElement.dataset.companionCollisionCorrections = "0";
@@ -1496,18 +1498,24 @@ function applySelfCollisionAvoidance() {
 
   const shoulderWidth = collisionLeftShoulder.distanceTo(collisionRightShoulder);
   const torsoHeight = collisionHips.distanceTo(collisionNeck);
-  const halfWidth = shoulderWidth * 0.5;
+  const collisionSafety = THREE.MathUtils.clamp(
+    Number(state.settings?.collision_safety) || 1.08,
+    0.8,
+    1.5,
+  );
+  const halfWidth = shoulderWidth * 0.5 * collisionSafety;
   const halfHeight = torsoHeight * 0.56;
-  const frontDepth = shoulderWidth * 0.34;
-  const forearmRadius = shoulderWidth * 0.085;
-  const handRadius = shoulderWidth * 0.11;
+  const frontDepth = shoulderWidth * 0.34 * collisionSafety;
+  const forearmRadius = shoulderWidth * 0.085 * collisionSafety;
+  const handRadius = shoulderWidth * 0.11 * collisionSafety;
   const headNeckDistance = collisionHead.distanceTo(collisionNeck);
   collisionHeadCenter
     .copy(collisionHead)
     .addScaledVector(collisionUp, headNeckDistance * 0.42);
   // Hair and sleeves extend well beyond the humanoid head/hand bones, so the
   // safety radius deliberately includes a small visual-geometry margin.
-  const headRadius = Math.max(shoulderWidth * 0.53, headNeckDistance * 1.08);
+  const headRadius = Math.max(shoulderWidth * 0.53, headNeckDistance * 1.08) *
+    collisionSafety;
   let corrections = 0;
   let strongestPenetration = 0;
 

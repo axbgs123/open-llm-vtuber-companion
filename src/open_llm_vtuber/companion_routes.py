@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import os
@@ -85,6 +86,7 @@ DEFAULT_AVATAR = {
     "action_style": "natural",
     "gesture_intensity": 0.75,
     "gesture_frequency": 0.65,
+    "collision_safety": 1.08,
     "gaze_enabled": True,
     "stage_x": 0.0,
     "stage_y": 0.0,
@@ -338,6 +340,9 @@ def get_avatar_settings(conf_uid: str) -> dict[str, Any]:
     )
     settings["gesture_frequency"] = max(
         0.0, min(1.0, float(settings.get("gesture_frequency", 0.65)))
+    )
+    settings["collision_safety"] = max(
+        0.8, min(1.5, float(settings.get("collision_safety", 1.08)))
     )
     settings["gaze_enabled"] = bool(settings.get("gaze_enabled", True))
     settings["stage_x"] = max(-3.0, min(3.0, float(settings.get("stage_x", 0.0))))
@@ -801,9 +806,7 @@ def init_companion_routes() -> APIRouter:
         return {"ok": True, "profile": profile}
 
     @router.get("/api/companion/avatar/{conf_uid}/animations/{animation_id}/file")
-    async def serve_vrma_animation(
-        conf_uid: str, animation_id: str, request: Request
-    ):
+    async def serve_vrma_animation(conf_uid: str, animation_id: str, request: Request):
         if forbidden := _local_only(request):
             return forbidden
         profile = next(
@@ -823,15 +826,15 @@ def init_companion_routes() -> APIRouter:
         return FileResponse(path, media_type="model/gltf-binary", filename=path.name)
 
     @router.put("/api/companion/avatar/{conf_uid}/animations/{animation_id}")
-    async def update_vrma_animation(
-        conf_uid: str, animation_id: str, request: Request
-    ):
+    async def update_vrma_animation(conf_uid: str, animation_id: str, request: Request):
         if forbidden := _local_only(request):
             return forbidden
         body = await request.json()
         state = _load_state()
         profiles = state.setdefault("vrm_animations", {}).get(conf_uid, [])
-        target = next((item for item in profiles if item.get("id") == animation_id), None)
+        target = next(
+            (item for item in profiles if item.get("id") == animation_id), None
+        )
         if not target:
             return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
         if "gesture" in body:
@@ -848,15 +851,15 @@ def init_companion_routes() -> APIRouter:
         return {"ok": True, "profile": target}
 
     @router.delete("/api/companion/avatar/{conf_uid}/animations/{animation_id}")
-    async def delete_vrma_animation(
-        conf_uid: str, animation_id: str, request: Request
-    ):
+    async def delete_vrma_animation(conf_uid: str, animation_id: str, request: Request):
         if forbidden := _local_only(request):
             return forbidden
         backup_manager.create_safety_snapshot(conf_uid, "before_vrma_delete")
         state = _load_state()
         profiles = state.setdefault("vrm_animations", {}).get(conf_uid, [])
-        target = next((item for item in profiles if item.get("id") == animation_id), None)
+        target = next(
+            (item for item in profiles if item.get("id") == animation_id), None
+        )
         if not target:
             return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
         path = Path(str(target.get("path") or "")).resolve()
@@ -1498,9 +1501,13 @@ def init_companion_routes() -> APIRouter:
         folder.mkdir(parents=True, exist_ok=True)
         upload_path = folder / f".{profile_id}.upload{suffix}"
         ref_path = folder / f"{profile_id}.wav"
-        upload_path.write_bytes(raw)
+        await asyncio.to_thread(upload_path.write_bytes, raw)
         try:
-            audio_info = _normalize_voice_reference(upload_path, ref_path)
+            # ffmpeg/ffprobe may take tens of seconds. Keep them off FastAPI's
+            # event loop so an upload cannot freeze chat and health requests.
+            audio_info = await asyncio.to_thread(
+                _normalize_voice_reference, upload_path, ref_path
+            )
         except (
             ValueError,
             RuntimeError,

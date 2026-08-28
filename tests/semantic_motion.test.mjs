@@ -4,7 +4,29 @@ import test from "node:test";
 import {
   classifyAssistantMotion,
   extractInlineEmotion,
+  resolveAssistantMotion,
 } from "../integrations/vrm_web/src/semantic_motion.js";
+
+test("structured assistant motion overrides ambiguous text safely", () => {
+  const motion = resolveAssistantMotion("我再想想。", {
+    motion: {
+      gesture: "wave",
+      sequence: ["wave", "nod", "not-a-motion"],
+      emotion: "joy",
+      intensity: 9,
+      reason: "model-plan",
+    },
+  });
+  assert.equal(motion.gesture, "wave");
+  assert.deepEqual(motion.sequence, ["wave", "nod"]);
+  assert.equal(motion.emotion, "happy");
+  assert.equal(motion.intensity, 3);
+  assert.equal(motion.structured, true);
+  assert.equal(
+    resolveAssistantMotion("让我想想。", { motion: { gesture: "invalid" } }).gesture,
+    "think",
+  );
+});
 
 test("Chinese happiness synonyms share an emotion but vary by intensity", () => {
   const mild = classifyAssistantMotion("这个结果还不错，我很满意。", "neutral");

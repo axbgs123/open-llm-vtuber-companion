@@ -276,6 +276,11 @@ async def status() -> dict[str, Any]:
     }
 
 
+def voice_idle_due(now: float, settings: dict[str, Any]) -> bool:
+    """Voice inference is independent of whether a browser stays connected."""
+    return now - _last_voice_activity >= settings["voice_idle_unload_seconds"]
+
+
 async def _monitor_loop() -> None:
     global _llm_unloaded
     while True:
@@ -288,11 +293,7 @@ async def _monitor_loop() -> None:
                 and now - _last_activity >= settings["llm_idle_unload_seconds"]
             ):
                 _llm_unloaded = await unload_ollama_model()
-            if (
-                await cosyvoice_running()
-                and now - _last_voice_activity >= settings["voice_idle_unload_seconds"]
-                and _connected_clients == 0
-            ):
+            if await cosyvoice_running() and voice_idle_due(now, settings):
                 await stop_cosyvoice()
                 logger.info("[runtime] stopped idle voice service")
         except asyncio.CancelledError:

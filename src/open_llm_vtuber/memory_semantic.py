@@ -13,12 +13,22 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
 from loguru import logger
 
 from . import memory_fts, runtime_manager
 from .utils.path_safety import safe_join
 
 CHAT_HISTORY_DIR = "chat_history"
+_INDEX_CACHE: dict[
+    str,
+    tuple[
+        tuple[int, int],
+        str,
+        list[tuple[str, str, str, str, int]],
+        np.ndarray,
+    ],
+] = {}
 
 
 def _db_path(conf_uid: str) -> str:
@@ -93,6 +103,47 @@ def _unpack(blob: bytes) -> list[float]:
     return list(values)
 
 
+def _invalidate_index(path: str) -> None:
+    _INDEX_CACHE.pop(os.path.abspath(path), None)
+
+
+def _load_index(
+    path: str,
+) -> tuple[str, list[tuple[str, str, str, str, int]], np.ndarray]:
+    """Load and normalize an index once; reuse it until the DB changes."""
+    absolute = os.path.abspath(path)
+    stat = os.stat(absolute)
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _INDEX_CACHE.get(absolute)
+    if cached and cached[0] == signature:
+        return cached[1], cached[2], cached[3]
+
+    conn = sqlite3.connect(absolute)
+    try:
+        rows = conn.execute(
+            "SELECT text, role, ts, src, message_index, model, vector FROM vectors"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return "", [], np.empty((0, 0), dtype=np.float32)
+
+    dimensions = len(rows[0][6]) // 4
+    valid = [row for row in rows if len(row[6]) == dimensions * 4]
+    metadata = [
+        (str(text), str(role), str(ts or ""), str(src), int(message_index))
+        for text, role, ts, src, message_index, _model, _vector in valid
+    ]
+    matrix = np.vstack(
+        [np.frombuffer(row[6], dtype=np.float32) for row in valid]
+    ).astype(np.float32, copy=False)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    np.divide(matrix, norms, out=matrix, where=norms != 0)
+    model = str(valid[0][5])
+    _INDEX_CACHE[absolute] = (signature, model, metadata, matrix)
+    return model, metadata, matrix
+
+
 async def rebuild_index(conf_uid: str, model: str | None = None) -> int:
     model = model or str(runtime_manager.get_settings()["semantic_model"])
     if not await model_installed(model):
@@ -128,6 +179,7 @@ async def rebuild_index(conf_uid: str, model: str | None = None) -> int:
         conn.commit()
     finally:
         conn.close()
+    _invalidate_index(path)
     logger.info(f"[semantic] indexed {len(rows)} messages for {conf_uid} with {model}")
     return len(rows)
 
@@ -174,6 +226,7 @@ async def append_turn(
         conn.commit()
     finally:
         conn.close()
+    _invalidate_index(path)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -189,24 +242,27 @@ async def search(conf_uid: str, query: str, k: int = 5) -> list[dict[str, Any]]:
     path = _db_path(conf_uid)
     if not os.path.isfile(path):
         return []
-    conn = sqlite3.connect(path)
-    try:
-        row = conn.execute("SELECT model FROM vectors LIMIT 1").fetchone()
-        if not row:
-            return []
-        model = str(row[0])
-        query_vectors = await _embed([query], model)
-        if not query_vectors:
-            return []
-        query_vector = query_vectors[0]
-        rows = conn.execute(
-            "SELECT text, role, ts, src, message_index, vector FROM vectors"
-        ).fetchall()
-    finally:
-        conn.close()
+    model, rows, matrix = await asyncio.to_thread(_load_index, path)
+    if not model or not rows:
+        return []
+    query_vectors = await _embed([query], model)
+    if not query_vectors:
+        return []
+    query_vector = np.asarray(query_vectors[0], dtype=np.float32)
+    norm = float(np.linalg.norm(query_vector))
+    if not norm or matrix.shape[1] != query_vector.size:
+        return []
+    scores = matrix @ (query_vector / norm)
+    limit = max(1, min(20, int(k), len(rows)))
+    if limit < len(rows):
+        candidates = np.argpartition(scores, -limit)[-limit:]
+        indices = candidates[np.argsort(scores[candidates])[::-1]]
+    else:
+        indices = np.argsort(scores)[::-1]
     scored = []
-    for text, role, timestamp, source, message_index, blob in rows:
-        score = _cosine(query_vector, _unpack(blob))
+    for index in indices:
+        text, role, timestamp, source, message_index = rows[int(index)]
+        score = float(scores[int(index)])
         scored.append(
             {
                 "text": str(text),
@@ -220,8 +276,7 @@ async def search(conf_uid: str, query: str, k: int = 5) -> list[dict[str, Any]]:
                 "snippet": memory_fts._format_snippet(str(text), str(role)),
             }
         )
-    scored.sort(key=lambda item: item["score"], reverse=True)
-    return scored[: max(1, min(20, int(k)))]
+    return scored
 
 
 async def hybrid_search(conf_uid: str, query: str, k: int = 5) -> list[dict[str, Any]]:
@@ -258,7 +313,9 @@ async def hybrid_search(conf_uid: str, query: str, k: int = 5) -> list[dict[str,
         token.lower()
         for token in re.findall(r"[A-Za-z0-9_]{2,}|[\u3400-\u9fff]{2,}", query)
     }
-    wants_recent = any(word in query for word in ("最近", "刚才", "今天", "上次", "近来"))
+    wants_recent = any(
+        word in query for word in ("最近", "刚才", "今天", "上次", "近来")
+    )
     now = dt.datetime.now().astimezone()
     for item in merged.values():
         text = str(item.get("text", "")).lower()

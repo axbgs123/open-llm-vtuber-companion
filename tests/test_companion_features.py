@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 import datetime as dt
@@ -370,6 +371,118 @@ class CompanionFeatureTests(unittest.TestCase):
             )
             self.assertEqual(settings["llm_idle_unload_seconds"], 60)
             self.assertEqual(settings["voice_idle_unload_seconds"], 86400)
+
+    def test_voice_idle_unload_does_not_depend_on_open_browser(self):
+        with (
+            patch.object(runtime_manager, "_last_voice_activity", 100.0),
+            patch.object(runtime_manager, "_connected_clients", 4),
+        ):
+            self.assertTrue(
+                runtime_manager.voice_idle_due(
+                    701.0, {"voice_idle_unload_seconds": 600}
+                )
+            )
+
+    def test_conversation_finalizes_when_playback_ack_is_lost(self):
+        async def run():
+            websocket_send = AsyncMock()
+            tts_manager = TTSTaskManager()
+            tts_manager.task_list = [asyncio.create_task(asyncio.sleep(0))]
+            with patch.object(
+                conversation_utils.message_handler,
+                "wait_for_response",
+                AsyncMock(return_value=None),
+            ) as waiter:
+                await conversation_utils.finalize_conversation_turn(
+                    tts_manager, websocket_send, "client"
+                )
+            waiter.assert_awaited_once_with(
+                "client", "frontend-playback-complete", timeout=20.0
+            )
+            messages = [
+                json.loads(call.args[0]) for call in websocket_send.await_args_list
+            ]
+            self.assertIn({"type": "force-new-message"}, messages)
+            self.assertIn(
+                {"type": "control", "text": "conversation-chain-end"}, messages
+            )
+
+        asyncio.run(run())
+
+    def test_semantic_index_is_cached_and_vectorized(self):
+        db = self.root / "semantic.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE vectors(id INTEGER PRIMARY KEY, text TEXT, role TEXT, "
+            "ts TEXT, src TEXT, message_index INTEGER, model TEXT, vector BLOB)"
+        )
+        conn.executemany(
+            "INSERT INTO vectors(text, role, ts, src, message_index, model, vector) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "苹果",
+                    "human",
+                    "1",
+                    "a.json",
+                    0,
+                    "embed",
+                    memory_semantic._pack([1.0, 0.0]),
+                ),
+                (
+                    "咖啡",
+                    "ai",
+                    "2",
+                    "b.json",
+                    0,
+                    "embed",
+                    memory_semantic._pack([0.0, 1.0]),
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        async def run():
+            with (
+                patch.object(memory_semantic, "_db_path", return_value=str(db)),
+                patch.object(
+                    memory_semantic,
+                    "_embed",
+                    AsyncMock(return_value=[[0.9, 0.1]]),
+                ),
+            ):
+                first = await memory_semantic.search("role", "水果", 1)
+                cache_key = os.path.abspath(db)
+                cached = memory_semantic._INDEX_CACHE[cache_key][3]
+                second = await memory_semantic.search("role", "水果", 1)
+                self.assertEqual(first[0]["text"], "苹果")
+                self.assertEqual(second[0]["text"], "苹果")
+                self.assertIs(cached, memory_semantic._INDEX_CACHE[cache_key][3])
+
+        asyncio.run(run())
+
+    def test_companion_ui_has_one_vrma_form_and_collision_control(self):
+        html = (companion_routes.ROOT / "companion_ui" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(html.count('id="vrmaForm"'), 1)
+        self.assertEqual(html.count('id="vrmaList"'), 1)
+        self.assertIn('id="collisionSafety"', html)
+
+    def test_voice_upload_offloads_normalization_and_install_is_pinned(self):
+        routes = (
+            companion_routes.ROOT / "src/open_llm_vtuber/companion_routes.py"
+        ).read_text(encoding="utf-8")
+        installer = (
+            companion_routes.ROOT / "integrations/cosyvoice/install.command"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "await asyncio.to_thread(\n                _normalize_voice_reference",
+            routes,
+        )
+        self.assertIn("COSYVOICE_COMMIT=", installer)
+        self.assertIn("MODEL_REVISION=", installer)
 
     def test_encrypted_incremental_backup_and_restore(self):
         root = self.root / "app"

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 import torchaudio
+import modelscope
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -21,8 +22,24 @@ PROJECT_ROOT = HERE.parents[1]
 COSY_ROOT = HERE / "CosyVoice"
 MODEL_DIR = HERE / "models" / "Fun-CosyVoice3-0.5B"
 VOICE_ROOT = PROJECT_ROOT / "companion_data" / "voice_references"
+WETEXT_DIR = HERE / "models" / "wetext"
 
 sys.path[:0] = [str(COSY_ROOT), str(COSY_ROOT / "third_party" / "Matcha-TTS")]
+
+_snapshot_download = modelscope.snapshot_download
+
+
+def _local_snapshot_download(model_id: str, *args, **kwargs):
+    """Keep runtime model loading offline; installation owns all downloads."""
+    if model_id == "pengzhendong/wetext":
+        required = WETEXT_DIR / "zh" / "tn" / "tagger.fst"
+        if required.is_file():
+            return str(WETEXT_DIR)
+        raise RuntimeError("local WeText resources are missing; rerun install.command")
+    return _snapshot_download(model_id, *args, **kwargs)
+
+
+modelscope.snapshot_download = _local_snapshot_download
 
 from cosyvoice.cli.cosyvoice import AutoModel  # noqa: E402
 
@@ -73,7 +90,11 @@ inference_lock = threading.Lock()
 def _load_model() -> None:
     global model, model_error
     try:
-        model = AutoModel(model_dir=str(MODEL_DIR), fp16=False)
+        loaded = AutoModel(model_dir=str(MODEL_DIR), fp16=False)
+        frontend = str(getattr(getattr(loaded, "frontend", None), "text_frontend", ""))
+        if frontend not in {"wetext", "ttsfrd"}:
+            raise RuntimeError("CosyVoice text frontend failed to initialize")
+        model = loaded
     except Exception as exc:  # surfaced by /health and /tts
         model_error = f"{type(exc).__name__}: {exc}"
 
@@ -98,6 +119,9 @@ def health() -> dict:
         "ok": model is not None,
         "model": "Fun-CosyVoice3-0.5B-2512",
         "device": str(getattr(getattr(model, "model", None), "device", "cpu")),
+        "text_frontend": str(
+            getattr(getattr(model, "frontend", None), "text_frontend", "")
+        ),
         "error": model_error,
     }
 
