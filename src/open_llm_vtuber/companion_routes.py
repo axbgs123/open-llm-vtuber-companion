@@ -6,6 +6,8 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
@@ -401,6 +403,82 @@ def _loopback_api(url: str) -> bool:
         return False
 
 
+def _voice_audio_info(path: Path) -> dict[str, Any]:
+    probe = shutil.which("ffprobe")
+    if not probe:
+        raise RuntimeError("ffprobe is required to inspect reference audio")
+    result = subprocess.run(
+        [
+            probe,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate,channels:format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    data = json.loads(result.stdout or "{}")
+    stream = (data.get("streams") or [{}])[0]
+    return {
+        "duration": round(float((data.get("format") or {}).get("duration") or 0), 3),
+        "sample_rate": int(stream.get("sample_rate") or 0),
+        "channels": int(stream.get("channels") or 0),
+    }
+
+
+def _normalize_voice_reference(source: Path, target: Path) -> dict[str, Any]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to normalize reference audio")
+    trim_and_level = (
+        "silenceremove=start_periods=1:start_silence=0.12:start_threshold=-48dB,"
+        "areverse,"
+        "silenceremove=start_periods=1:start_silence=0.12:start_threshold=-48dB,"
+        "areverse,loudnorm=I=-20:TP=-2:LRA=7"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-vn",
+            "-af",
+            trim_and_level,
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-c:a",
+            "pcm_s16le",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=90,
+    )
+    info = _voice_audio_info(target)
+    if not 3.0 <= info["duration"] <= 15.0:
+        target.unlink(missing_ok=True)
+        raise ValueError("reference audio must contain 3-15 seconds of speech")
+    if info["sample_rate"] != 24000 or info["channels"] != 1:
+        target.unlink(missing_ok=True)
+        raise ValueError("reference audio normalization failed")
+    return info
+
+
 def _activate_voice(conf_uid: str, profile: dict[str, Any]) -> None:
     found = _find_character(conf_uid)
     if not found:
@@ -419,9 +497,11 @@ def _activate_voice(conf_uid: str, profile: dict[str, Any]) -> None:
         "prompt_text": profile["prompt_text"],
         "prompt_wav_upload_url": profile["ref_audio_path"],
         "prompt_wav_record_url": profile["ref_audio_path"],
-        "instruct_text": "",
+        "instruct_text": str(profile.get("style_prompt") or ""),
         "seed": 0,
         "api_name": "/tts",
+        "speed": float(profile.get("speed", 1.0)),
+        "emotion_strength": float(profile.get("emotion_strength", 0.72)),
     }
     _write_roundtrip(path, data)
 
@@ -1372,6 +1452,9 @@ def init_companion_routes() -> APIRouter:
         prompt_lang: str = Form("zh"),
         text_lang: str = Form("zh"),
         api_url: str = Form("http://127.0.0.1:50000/tts"),
+        style_prompt: str = Form(""),
+        speed: float = Form(1.0),
+        emotion_strength: float = Form(0.72),
     ):
         if forbidden := _local_only(request):
             return forbidden
@@ -1389,11 +1472,48 @@ def init_companion_routes() -> APIRouter:
             return JSONResponse(
                 {"ok": False, "error": "audio must be 1B-50MB"}, status_code=400
             )
-        profile_id = _slug(name, "voice") + "-" + dt.datetime.now().strftime("%H%M%S")
+        if not 0.85 <= speed <= 1.15:
+            return JSONResponse(
+                {"ok": False, "error": "speed must be between 0.85 and 1.15"},
+                status_code=400,
+            )
+        if not 0.0 <= emotion_strength <= 1.0:
+            return JSONResponse(
+                {"ok": False, "error": "emotion strength must be 0-1"},
+                status_code=400,
+            )
+        if len(style_prompt.strip()) > 200 or len(prompt_text.strip()) > 500:
+            return JSONResponse(
+                {"ok": False, "error": "voice prompt is too long"},
+                status_code=400,
+            )
+        profile_id = (
+            _slug(name[:60], "voice")
+            + "-"
+            + dt.datetime.now().strftime("%H%M%S")
+            + "-"
+            + uuid.uuid4().hex[:6]
+        )
         folder = VOICE_DIR / _slug(conf_uid)
         folder.mkdir(parents=True, exist_ok=True)
-        ref_path = folder / f"{profile_id}{suffix}"
-        ref_path.write_bytes(raw)
+        upload_path = folder / f".{profile_id}.upload{suffix}"
+        ref_path = folder / f"{profile_id}.wav"
+        upload_path.write_bytes(raw)
+        try:
+            audio_info = _normalize_voice_reference(upload_path, ref_path)
+        except (
+            ValueError,
+            RuntimeError,
+            subprocess.SubprocessError,
+            json.JSONDecodeError,
+        ) as exc:
+            ref_path.unlink(missing_ok=True)
+            return JSONResponse(
+                {"ok": False, "error": str(exc) or "invalid reference audio"},
+                status_code=400,
+            )
+        finally:
+            upload_path.unlink(missing_ok=True)
         profile = {
             "id": profile_id,
             "name": name.strip(),
@@ -1402,6 +1522,13 @@ def init_companion_routes() -> APIRouter:
             "prompt_lang": prompt_lang.strip() or "zh",
             "text_lang": text_lang.strip() or "zh",
             "api_url": api_url.rstrip("/"),
+            "style_prompt": style_prompt.strip(),
+            "speed": round(float(speed), 3),
+            "emotion_strength": round(float(emotion_strength), 3),
+            "duration": audio_info["duration"],
+            "sample_rate": audio_info["sample_rate"],
+            "channels": audio_info["channels"],
+            "original_filename": Path(audio.filename or "reference.wav").name,
             "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         state = _load_state()
@@ -1458,7 +1585,8 @@ def init_companion_routes() -> APIRouter:
         conf_uid: str,
         profile_id: str,
         request: Request,
-        text: str = "你好，很高兴认识你。",
+        text: str = "",
+        emotion: str = "neutral",
     ):
         if forbidden := _local_only(request):
             return forbidden
@@ -1476,16 +1604,29 @@ def init_companion_routes() -> APIRouter:
                 {"ok": False, "error": "CosyVoice could not start"}, status_code=503
             )
         runtime_manager.note_voice_activity()
+        preview_texts = {
+            "neutral": "你好，我们来聊聊今天发生的事情吧。",
+            "happy": "太好了，听到这个消息我真的很开心！",
+            "angry": "这件事让我很生气，请不要再这样做了。",
+        }
+        preview_emotion = emotion.strip().lower()
+        preview_text = text.strip() or preview_texts.get(
+            preview_emotion, preview_texts["neutral"]
+        )
         try:
             async with httpx.AsyncClient(timeout=180) as client:
                 result = await client.post(
                     profile.get("api_url") or "http://127.0.0.1:50000/tts",
                     json={
-                        "text": text[:500],
+                        "text": preview_text[:500],
                         "prompt_wav": profile["ref_audio_path"],
                         "prompt_text": profile["prompt_text"],
-                        "emotion": "happy",
-                        "speed": 1.0,
+                        "emotion": preview_emotion,
+                        "instruct_text": profile.get("style_prompt", ""),
+                        "speed": float(profile.get("speed", 1.0)),
+                        "emotion_strength": float(
+                            profile.get("emotion_strength", 0.72)
+                        ),
                     },
                 )
                 result.raise_for_status()

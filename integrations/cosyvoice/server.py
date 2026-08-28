@@ -41,14 +41,28 @@ EMOTION_INSTRUCTIONS = {
     "disgust": "用嫌弃、克制的普通话表达",
 }
 
+EMOTION_ALIASES = {
+    "happiness": "happy",
+    "joy": "happy",
+    "smirk": "happy",
+    "excited": "excited",
+    "sadness": "sad",
+    "sorrow": "sad",
+    "anger": "angry",
+    "surprise": "surprised",
+    "relaxed": "calm",
+    "caring": "calm",
+}
+
 
 class SynthesisRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     prompt_wav: str
     prompt_text: str = ""
     emotion: str = "neutral"
-    instruct_text: str = ""
+    instruct_text: str = Field(default="", max_length=200)
     speed: float = Field(default=1.0, ge=0.75, le=1.3)
+    emotion_strength: float = Field(default=0.72, ge=0.0, le=1.0)
 
 
 model = None
@@ -103,10 +117,21 @@ def synthesize(body: SynthesisRequest) -> Response:
     if model is None:
         raise HTTPException(503, model_error or "model is not ready")
     prompt_wav = _safe_reference(body.prompt_wav)
-    emotion = body.emotion.strip().lower()
-    instruction = body.instruct_text.strip() or EMOTION_INSTRUCTIONS.get(
+    raw_emotion = body.emotion.strip().lower()
+    emotion = EMOTION_ALIASES.get(raw_emotion, raw_emotion)
+    emotion_instruction = EMOTION_INSTRUCTIONS.get(
         emotion, EMOTION_INSTRUCTIONS["neutral"]
     )
+    base_style = body.instruct_text.strip()
+    instruction = (
+        f"保持以下基础说话感觉：{base_style}；同时{emotion_instruction}"
+        if base_style
+        else emotion_instruction
+    )
+    if body.emotion_strength <= 0.35:
+        instruction = f"轻微地、克制地{instruction}"
+    elif body.emotion_strength >= 0.82:
+        instruction = f"明显地但保持自然和清晰地{instruction}"
     instruction = f"You are a helpful assistant. {instruction}。<|endofprompt|>"
     try:
         with inference_lock:

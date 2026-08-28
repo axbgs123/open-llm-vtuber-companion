@@ -317,6 +317,8 @@ character_config:
       instruct_text: ''
       seed: 0
       api_name: '/generate_audio'
+      speed: 1.0
+      emotion_strength: 0.72
 
     cosyvoice2_tts: # Cosy Voice TTS connects to the gradio webui
       # Check their documentation for deployment and the meaning of the following configurations

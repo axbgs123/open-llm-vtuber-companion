@@ -26,6 +26,7 @@ from src.open_llm_vtuber import (
 )
 from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
 from src.open_llm_vtuber.tts.cosyvoice_tts import TTSEngine as CosyVoiceEngine
+from src.open_llm_vtuber.tts.tts_factory import TTSFactory
 from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
 from src.open_llm_vtuber.conversations import conversation_utils
 from src.open_llm_vtuber.agent.output_types import (
@@ -267,6 +268,45 @@ class CompanionFeatureTests(unittest.TestCase):
         self.assertTrue(companion_routes._loopback_api("http://127.0.0.1:9880/tts"))
         self.assertTrue(companion_routes._loopback_api("http://localhost:9880/tts"))
         self.assertFalse(companion_routes._loopback_api("https://example.com/tts"))
+
+    def test_voice_reference_normalization_uses_clone_safe_audio_format(self):
+        source = self.root / "upload.mp3"
+        target = self.root / "normalized.wav"
+        source.write_bytes(b"audio")
+        with (
+            patch.object(companion_routes.shutil, "which", return_value="/ffmpeg"),
+            patch.object(companion_routes.subprocess, "run") as run,
+            patch.object(
+                companion_routes,
+                "_voice_audio_info",
+                return_value={"duration": 6.2, "sample_rate": 24000, "channels": 1},
+            ),
+        ):
+            info = companion_routes._normalize_voice_reference(source, target)
+        command = run.call_args.args[0]
+        self.assertEqual(info["duration"], 6.2)
+        self.assertIn(
+            "loudnorm=I=-20:TP=-2:LRA=7",
+            command[command.index("-af") + 1],
+        )
+        self.assertEqual(command[command.index("-ac") + 1], "1")
+        self.assertEqual(command[command.index("-ar") + 1], "24000")
+
+    def test_voice_reference_normalization_rejects_bad_duration(self):
+        source = self.root / "upload.wav"
+        target = self.root / "normalized.wav"
+        source.write_bytes(b"audio")
+        with (
+            patch.object(companion_routes.shutil, "which", return_value="/ffmpeg"),
+            patch.object(companion_routes.subprocess, "run"),
+            patch.object(
+                companion_routes,
+                "_voice_audio_info",
+                return_value={"duration": 1.4, "sample_rate": 24000, "channels": 1},
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "3-15 seconds"):
+                companion_routes._normalize_voice_reference(source, target)
 
     def test_small_model_memory_echo_is_cleaned(self):
         raw = (
@@ -698,7 +738,81 @@ class CompanionFeatureTests(unittest.TestCase):
         self.assertEqual(
             CosyVoiceEngine._emotion(Actions(expressions=["excited"])), "excited"
         )
+        self.assertEqual(
+            CosyVoiceEngine._emotion(Actions(expressions=["anger"])), "angry"
+        )
+        self.assertEqual(
+            CosyVoiceEngine._emotion(Actions(expressions=["sadness"])), "sad"
+        )
+        self.assertEqual(
+            CosyVoiceEngine._emotion(Actions(expressions=["smirk"])), "happy"
+        )
+        self.assertEqual(
+            CosyVoiceEngine._emotion(Actions(expressions=["surprise"])),
+            "surprised",
+        )
+        self.assertEqual(
+            CosyVoiceEngine._emotion(
+                Actions(expressions=["neutral", "expression2", "anger"])
+            ),
+            "angry",
+        )
         self.assertEqual(CosyVoiceEngine._emotion(Actions()), "neutral")
+
+    def test_cosyvoice_factory_forwards_profile_prosody(self):
+        engine = TTSFactory.get_tts_engine(
+            "cosyvoice_tts",
+            client_url="http://127.0.0.1:50000",
+            prompt_wav_upload_url=str(self.root / "voice.wav"),
+            api_name="/tts",
+            speed=0.94,
+            emotion_strength=0.88,
+        )
+        self.assertEqual(engine.speed, 0.94)
+        self.assertEqual(engine.emotion_strength, 0.88)
+
+    def test_cosyvoice_uses_progressive_chinese_phrase_splitting(self):
+        engine = CosyVoiceEngine()
+        text = (
+            "第一句话应该尽快播放，减少用户等待；"
+            "第二句话随后生成，保持自然衔接；"
+            "第三句话用于确认长回复不会等到全部合成结束才开口。"
+        )
+        fragments = engine.split_streaming_text(text)
+        self.assertGreater(len(fragments), 1)
+        self.assertEqual("".join(fragments), text)
+
+    def test_cosyvoice_cache_does_not_start_the_large_backend(self):
+        reference = self.root / "reference.wav"
+        reference.write_bytes(b"RIFF" + b"0" * 256)
+        cached = self.root / "cached.wav"
+        cached.write_bytes(b"RIFF" + b"1" * 256)
+        output = self.root / "output.wav"
+        engine = CosyVoiceEngine(
+            prompt_wav_upload_url=str(reference),
+            speed=0.96,
+            emotion_strength=0.8,
+        )
+        with (
+            patch.object(engine, "_cache_path", return_value=cached),
+            patch.object(
+                engine,
+                "generate_cache_file_name",
+                return_value=str(output),
+            ),
+            patch.object(companion_diagnostics, "PATH", self.root / "diag.json"),
+            patch.object(
+                runtime_manager,
+                "ensure_cosyvoice_blocking",
+                side_effect=AssertionError("backend must stay off on cache hit"),
+                create=True,
+            ),
+        ):
+            result = engine.generate_audio_with_context(
+                "你好", Actions(expressions=["anger"])
+            )
+        self.assertEqual(result, str(output))
+        self.assertEqual(output.read_bytes(), cached.read_bytes())
 
 
 if __name__ == "__main__":

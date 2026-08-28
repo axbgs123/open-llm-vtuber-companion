@@ -179,9 +179,18 @@ The integration wraps the official
 Reference audio and voice profiles are stored per character. Only clone a voice
 you own or have explicit permission to use.
 
+- Uploads are trimmed at both ends, loudness-normalized, downmixed to mono and
+  converted to 24 kHz PCM WAV. References outside 3–15 seconds after trimming
+  are rejected before the 9 GB backend is started.
 - The same semantic expression drives VRM facial expression, procedural gesture,
   and a Chinese speaking-style instruction such as happy, sad, angry, surprised,
-  shy, calm, or excited.
+  shy, calm, or excited. Live2D aliases such as `anger`, `sadness`, `smirk` and
+  `surprise` are canonicalized instead of silently falling back to neutral.
+- Each voice profile stores base speaking style, speed and emotion strength.
+  Long Chinese replies are split at natural punctuation so the first phrase can
+  play before later synthesis finishes.
+- CosyVoice output is cached by reference-audio version, text, emotion, style,
+  speed and strength. A cache hit is playable without loading the large model.
 - The service is serialized for model safety, starts on demand, and unloads after
   the configured idle period. It listens only on `127.0.0.1:50000`.
 

@@ -325,6 +325,8 @@ character_config:
       instruct_text: '' # 指令文本
       seed: 0 # 种子
       api_name: '/generate_audio' # API 名称
+      speed: 1.0 # 语速（0.85-1.15）
+      emotion_strength: 0.72 # 情绪表现强度（0-1）
 
     cosyvoice2_tts: # Cosy Voice TTS 连接到 gradio webui
       # 查看他们的文档以了解部署和以下配置的含义

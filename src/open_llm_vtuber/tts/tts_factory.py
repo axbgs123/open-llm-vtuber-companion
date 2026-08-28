@@ -40,6 +40,8 @@ class TTSFactory:
                 instruct_text=kwargs.get("instruct_text"),
                 seed=kwargs.get("seed"),
                 api_name=kwargs.get("api_name"),
+                speed=kwargs.get("speed", 1.0),
+                emotion_strength=kwargs.get("emotion_strength", 0.72),
             )
         elif engine_type == "cosyvoice2_tts":
             from .cosyvoice2_tts import TTSEngine as Cosyvoice2TTSEngine

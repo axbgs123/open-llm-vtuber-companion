@@ -172,6 +172,8 @@ class CosyvoiceTTSConfig(I18nMixin):
     instruct_text: str = Field(..., alias="instruct_text")
     seed: int = Field(..., alias="seed")
     api_name: str = Field(..., alias="api_name")
+    speed: float = Field(1.0, ge=0.85, le=1.15, alias="speed")
+    emotion_strength: float = Field(0.72, ge=0.0, le=1.0, alias="emotion_strength")
 
     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
         "client_url": Description(
@@ -191,6 +193,10 @@ class CosyvoiceTTSConfig(I18nMixin):
         "instruct_text": Description(en="Instruction text", zh="指令文本"),
         "seed": Description(en="Random seed", zh="随机种子"),
         "api_name": Description(en="API endpoint name", zh="API 端点名称"),
+        "speed": Description(en="Speech speed", zh="语速"),
+        "emotion_strength": Description(
+            en="Emotion instruction strength", zh="情绪指令强度"
+        ),
     }
 
 
