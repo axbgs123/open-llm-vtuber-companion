@@ -24,7 +24,6 @@ from src.open_llm_vtuber import (
     data_migrations,
     environment_awareness,
 )
-from src.open_llm_vtuber.tts.gpt_sovits_tts import TTSEngine as GPTSoVITSEngine
 from src.open_llm_vtuber.tts.cosyvoice_tts import TTSEngine as CosyVoiceEngine
 from src.open_llm_vtuber.tts.tts_factory import TTSFactory
 from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
@@ -652,30 +651,6 @@ class CompanionFeatureTests(unittest.TestCase):
         ):
             companion_diagnostics.record("voice", 10)
 
-    def test_gpt_voice_uses_progressive_phrase_tasks(self):
-        async def exercise():
-            engine = GPTSoVITSEngine()
-            text = "这是第一段较短的话，用来尽快开始播放；这是第二段内容，用来验证后续片段按顺序生成。"
-            self.assertGreater(len(engine.split_streaming_text(text)), 1)
-            manager = TTSTaskManager()
-            manager._process_tts = AsyncMock()
-            await manager.speak(
-                text,
-                DisplayText(text=text, name="AI"),
-                Actions(),
-                None,
-                engine,
-                AsyncMock(),
-            )
-            await asyncio.gather(*manager.task_list)
-            calls = manager._process_tts.await_args_list
-            self.assertGreater(len(calls), 1)
-            self.assertEqual(calls[0].kwargs["display_text"].text, text)
-            self.assertEqual(calls[1].kwargs["display_text"].text, "")
-            manager.clear()
-
-        asyncio.run(exercise())
-
     def test_first_voice_fragment_is_queued_before_later_generation_finishes(self):
         class FragmentEngine:
             def __init__(self, root: Path):
@@ -720,19 +695,6 @@ class CompanionFeatureTests(unittest.TestCase):
             self.assertEqual(manager._payload_queue.qsize(), 2)
 
         asyncio.run(exercise())
-
-    def test_voice_cache_works_without_starting_backend(self):
-        engine = GPTSoVITSEngine(ref_audio_path="voice.wav", prompt_text="参考")
-        cached = self.root / "cached.wav"
-        output = self.root / "output.wav"
-        cached.write_bytes(b"RIFF" + b"0" * 256)
-        with (
-            patch.object(engine, "_cache_path", return_value=cached),
-            patch.object(engine, "generate_cache_file_name", return_value=str(output)),
-            patch.object(companion_diagnostics, "PATH", self.root / "voice-diag.json"),
-        ):
-            self.assertEqual(engine.generate_audio("你好"), str(output))
-            self.assertEqual(output.read_bytes(), cached.read_bytes())
 
     def test_cosyvoice_maps_character_expression_to_voice_emotion(self):
         self.assertEqual(

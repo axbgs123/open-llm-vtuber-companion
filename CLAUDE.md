@@ -57,7 +57,7 @@ The project uses a factory pattern for all AI engines:
 - Factory pattern for engine selection based on configuration
 
 **TTS Engines** (`src/open_llm_vtuber/tts/`):
-- Multiple TTS options: Azure TTS, Edge TTS, MeloTTS, CosyVoice, GPT-SoVITS, etc.
+- Multiple TTS options: Azure TTS, Edge TTS, MeloTTS, CosyVoice, etc.
 - Configurable voice cloning and multi-language support
 
 **VAD (Voice Activity Detection)** (`src/open_llm_vtuber/vad/`):

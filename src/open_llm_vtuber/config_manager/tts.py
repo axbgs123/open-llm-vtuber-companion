@@ -282,38 +282,6 @@ class XTTSConfig(I18nMixin):
     }
 
 
-class GPTSoVITSConfig(I18nMixin):
-    """Configuration for GPT-SoVITS."""
-
-    api_url: str = Field(..., alias="api_url")
-    text_lang: str = Field(..., alias="text_lang")
-    ref_audio_path: str = Field(..., alias="ref_audio_path")
-    prompt_lang: str = Field(..., alias="prompt_lang")
-    prompt_text: str = Field(..., alias="prompt_text")
-    text_split_method: str = Field(..., alias="text_split_method")
-    batch_size: str = Field(..., alias="batch_size")
-    media_type: str = Field(..., alias="media_type")
-    streaming_mode: str = Field(..., alias="streaming_mode")
-
-    DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
-        "api_url": Description(
-            en="URL of the GPT-SoVITS API endpoint", zh="GPT-SoVITS API 端点的 URL"
-        ),
-        "text_lang": Description(en="Language of the input text", zh="输入文本的语言"),
-        "ref_audio_path": Description(
-            en="Path to reference audio file", zh="参考音频文件路径"
-        ),
-        "prompt_lang": Description(en="Language of the prompt", zh="提示词语言"),
-        "prompt_text": Description(en="Prompt text", zh="提示文本"),
-        "text_split_method": Description(
-            en="Method for splitting text", zh="文本分割方法"
-        ),
-        "batch_size": Description(en="Batch size for processing", zh="处理批次大小"),
-        "media_type": Description(en="Output media type", zh="输出媒体类型"),
-        "streaming_mode": Description(en="Enable streaming mode", zh="启用流式模式"),
-    }
-
-
 class FishAPITTSConfig(I18nMixin):
     """Configuration for Fish API TTS."""
 
@@ -698,7 +666,6 @@ class TTSConfig(I18nMixin):
         "melo_tts",
         "coqui_tts",
         "x_tts",
-        "gpt_sovits_tts",
         "fish_api_tts",
         "sherpa_onnx_tts",
         "siliconflow_tts",
@@ -718,7 +685,6 @@ class TTSConfig(I18nMixin):
     melo_tts: Optional[MeloTTSConfig] = Field(None, alias="melo_tts")
     coqui_tts: Optional[CoquiTTSConfig] = Field(None, alias="coqui_tts")
     x_tts: Optional[XTTSConfig] = Field(None, alias="x_tts")
-    gpt_sovits_tts: Optional[GPTSoVITSConfig] = Field(None, alias="gpt_sovits")
     fish_api_tts: Optional[FishAPITTSConfig] = Field(None, alias="fish_api_tts")
     sherpa_onnx_tts: Optional[SherpaOnnxTTSConfig] = Field(
         None, alias="sherpa_onnx_tts"
@@ -749,9 +715,6 @@ class TTSConfig(I18nMixin):
         "melo_tts": Description(en="Configuration for Melo TTS", zh="Melo TTS 配置"),
         "coqui_tts": Description(en="Configuration for Coqui TTS", zh="Coqui TTS 配置"),
         "x_tts": Description(en="Configuration for XTTS", zh="XTTS 配置"),
-        "gpt_sovits_tts": Description(
-            en="Configuration for GPT-SoVITS", zh="GPT-SoVITS 配置"
-        ),
         "fish_api_tts": Description(
             en="Configuration for Fish API TTS", zh="Fish API TTS 配置"
         ),
@@ -798,8 +761,6 @@ class TTSConfig(I18nMixin):
             values.coqui_tts.model_validate(values.coqui_tts.model_dump())
         elif tts_model == "x_tts" and values.x_tts is not None:
             values.x_tts.model_validate(values.x_tts.model_dump())
-        elif tts_model == "gpt_sovits_tts" and values.gpt_sovits_tts is not None:
-            values.gpt_sovits_tts.model_validate(values.gpt_sovits_tts.model_dump())
         elif tts_model == "fish_api_tts" and values.fish_api_tts is not None:
             values.fish_api_tts.model_validate(values.fish_api_tts.model_dump())
         elif tts_model == "sherpa_onnx_tts" and values.sherpa_onnx_tts is not None:

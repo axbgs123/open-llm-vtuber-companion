@@ -82,7 +82,7 @@
 - 🧠 **광범위한 모델 지원**:
   - 🤖 Large Language Models (LLM): Ollama, OpenAI (and any OpenAI-compatible API), Gemini, Claude, Mistral, DeepSeek, Zhipu AI, GGUF, LM Studio, vLLM, etc.
   - 🎙️ Automatic Speech Recognition (ASR): sherpa-onnx, FunASR, Faster-Whisper, Whisper.cpp, Whisper, Groq Whisper, Azure ASR, etc.
-  - 🔊 Text-to-Speech (TTS): sherpa-onnx, pyttsx3, MeloTTS, Coqui-TTS, GPTSoVITS, Bark, CosyVoice, Edge TTS, Fish Audio, Azure TTS, etc.
+  - 🔊 Text-to-Speech (TTS): sherpa-onnx, pyttsx3, MeloTTS, Coqui-TTS, Bark, CosyVoice, Edge TTS, Fish Audio, Azure TTS, etc.
 
 - 🔧 **높은 커스터마이징 자유도**:
   - ⚙️ **간단한 모듈 구성**: 간단한 설정 파일 수정만으로 다양한 기능 모듈을 전환할 수 있으며, 코드 수정은 필요하지 않습니다.
@@ -155,7 +155,6 @@
 ## 스타 기록 (Star History)
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Open-LLM-VTuber/open-llm-vtuber&type=Date)](https://star-history.com/#Open-LLM-VTuber/open-llm-vtuber&Date)
-
 
 
 

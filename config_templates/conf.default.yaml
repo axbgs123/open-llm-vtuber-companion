@@ -276,7 +276,7 @@ character_config:
     # text to speech model options:
     #   'azure_tts', 'pyttsx3_tts', 'edge_tts', 'bark_tts',
     #   'cosyvoice_tts', 'melo_tts', 'coqui_tts', 'piper_tts',
-    #   'fish_api_tts', 'x_tts', 'gpt_sovits_tts', 'sherpa_onnx_tts'
+    #   'fish_api_tts', 'x_tts', 'sherpa_onnx_tts'
     #   'minimax_tts', 'elevenlabs_tts', 'cartesia_tts'
 
     azure_tts:
@@ -344,18 +344,6 @@ character_config:
       api_url: 'http://127.0.0.1:8020/tts_to_audio'
       speaker_wav: 'female'
       language: 'en'
-
-    gpt_sovits_tts:
-      # put ref audio to root path of GPT-Sovits, or set the path here
-      api_url: 'http://127.0.0.1:9880/tts'
-      text_lang: 'zh'
-      ref_audio_path: ''
-      prompt_lang: 'zh'
-      prompt_text: ''
-      text_split_method: 'cut5'
-      batch_size: '1'
-      media_type: 'wav'
-      streaming_mode: 'false'
 
     fish_api_tts:
       # The API key for the Fish TTS API.

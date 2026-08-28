@@ -273,7 +273,7 @@ character_config:
     # 文本转语音模型选项：
     #   'azure_tts', 'pyttsx3_tts', 'edge_tts', 'bark_tts',
     #   'cosyvoice_tts', 'melo_tts', 'coqui_tts', 'piper_tts',
-    #   'fish_api_tts', 'x_tts', 'gpt_sovits_tts', 'sherpa_onnx_tts'
+    #   'fish_api_tts', 'x_tts', 'sherpa_onnx_tts'
     #   'minimax_tts', 'elevenlabs_tts', 'cartesia_tts'
 
     siliconflow_tts:
@@ -352,18 +352,6 @@ character_config:
       api_url: 'http://127.0.0.1:8020/tts_to_audio' # API URL
       speaker_wav: 'female' # 说话人 WAV 文件
       language: 'en' # 语言
-
-    gpt_sovits_tts:
-      # 将参考音频放到 GPT-Sovits 的根路径，或在此处设置路径
-      api_url: 'http://127.0.0.1:9880/tts' # API URL
-      text_lang: 'zh' # 文本语言
-      ref_audio_path: '' # str.(必需) 参考音频的路径
-      prompt_lang: 'zh' # str.(必需) 参考音频提示文本的语言
-      prompt_text: '' # str.(可选) 参考音频的提示文本
-      text_split_method: 'cut5' # 文本分割方法
-      batch_size: '1' # 批处理大小
-      media_type: 'wav' # 媒体类型
-      streaming_mode: 'false' # 流模式
 
     fish_api_tts:
       # Fish TTS API 的 API 密钥。

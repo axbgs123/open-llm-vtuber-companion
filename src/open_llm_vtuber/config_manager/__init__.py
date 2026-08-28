@@ -34,7 +34,6 @@ from .tts import (
     MeloTTSConfig,
     CoquiTTSConfig,
     XTTSConfig,
-    GPTSoVITSConfig,
     FishAPITTSConfig,
     SherpaOnnxTTSConfig,
 )
@@ -102,7 +101,6 @@ __all__ = [
     "MeloTTSConfig",
     "CoquiTTSConfig",
     "XTTSConfig",
-    "GPTSoVITSConfig",
     "FishAPITTSConfig",
     "SherpaOnnxTTSConfig",
     # VAD related classes
