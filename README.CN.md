@@ -1,7 +1,8 @@
 
 ![](./assets/banner.cn.jpg)
 
-<h1 align="center">Open-LLM-VTuber</h1>
+<h1 align="center">Open-LLM-VTuber Companion</h1>
+<p align="center">面向中文本地运行的沉浸式 AI 伴侣增强版</p>
 <h3 align="center">
 
 [![GitHub release](https://img.shields.io/github/v/release/Open-LLM-VTuber/Open-LLM-VTuber)](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber/releases)
@@ -18,6 +19,22 @@
 [![](https://dcbadge.limes.pink/api/server/3UDA8YFDXx)](https://discord.gg/3UDA8YFDXx)
 
 [ENGLISH README](./README.md) | 中文 README | [한국어 README](./README.KR.md) | [日本語 README](./README.JP.md)
+
+> [!NOTE]
+> 这是基于 [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) 开发的非官方社区增强版，目前由个人与朋友共同维护。
+
+本分支在原项目的实时语音对话能力之上，重点增加了：
+
+- **VRM 3D 数字人**：支持情绪表情、口型同步、注视、自然待机和可组合动作；
+- **长期记忆与历史检索**：保存、检索和管理角色与用户之间的重要经历；
+- **多角色管理**：每个角色拥有独立人设、记忆、声音和形象配置；
+- **主动陪伴**：在沉默一段时间后，根据上下文自然发起话题；
+- **中文声音克隆**：集成 CosyVoice3 本地服务和音色管理；
+- **本地优先**：角色、声音、记忆和聊天数据默认留在使用者自己的设备上。
+
+项目仍在快速迭代。欢迎通过 Issue 讨论问题，并通过 Pull Request 一起改进。公开仓库不包含维护者本地使用的 VRM、克隆声音、模型权重、聊天记录或记忆数据。
+
+> 不同组件适用不同许可证。使用或分发前请阅读 [第三方许可说明](./THIRD_PARTY_NOTICES.md)。
 
 [使用文档](https://open-llm-vtuber.github.io/docs/quick-start) | | [![项目路线图](https://img.shields.io/badge/项目路线图-GitHub_Project-yellow)](https://github.com/orgs/Open-LLM-VTuber/projects/2)
 

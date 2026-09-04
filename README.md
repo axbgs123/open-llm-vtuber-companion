@@ -1,6 +1,7 @@
 ![](./assets/banner.jpg)
 
-<h1 align="center">Open-LLM-VTuber</h1>
+<h1 align="center">Open-LLM-VTuber Companion</h1>
+<p align="center">An immersive, local-first AI companion optimized for Chinese conversations</p>
 <h3 align="center">
 
 [![GitHub release](https://img.shields.io/github/v/release/Open-LLM-VTuber/Open-LLM-VTuber)](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber/releases) 
@@ -19,6 +20,22 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Open-LLM-VTuber/Open-LLM-VTuber)
 
 ENGLISH README | [中文 README](./README.CN.md) | [한국어 README](./README.KR.md) | [日本語 README](./README.JP.md)
+
+> [!NOTE]
+> This is an unofficial community-enhanced edition based on [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber), maintained collaboratively by independent developers.
+
+Beyond the upstream real-time voice conversation experience, this edition adds:
+
+- **VRM 3D avatars** with emotional expressions, lip sync, gaze, natural idle motion, and composable actions;
+- **Long-term memory and history retrieval** for important experiences shared by the user and character;
+- **Multi-character management** with separate persona, memory, voice, and avatar settings;
+- **Proactive companionship** that can naturally start a topic after a period of silence;
+- **Chinese voice cloning** through a local CosyVoice3 service and voice-profile management;
+- **Local-first data handling**, keeping avatars, voices, memories, and chat data on the user's own device by default.
+
+The project is under active development. Issues and pull requests are welcome. The public repository does not contain the maintainers' local VRM avatars, cloned voices, model weights, chat history, or memory data.
+
+> Different components use different licenses. Read [Third-party notices](./THIRD_PARTY_NOTICES.md) before use or redistribution.
 
 [Documentation](https://open-llm-vtuber.github.io/docs/quick-start) | [![Roadmap](https://img.shields.io/badge/Roadmap-GitHub_Project-yellow)](https://github.com/orgs/Open-LLM-VTuber/projects/2)
 
@@ -151,7 +168,6 @@ Thanks our contributors and maintainers for making this project possible.
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Open-LLM-VTuber/open-llm-vtuber&type=Date)](https://star-history.com/#Open-LLM-VTuber/open-llm-vtuber&Date)
-
 
 
 
