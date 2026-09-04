@@ -233,7 +233,7 @@ The following remain local and are excluded from Git:
 - `integrations/cosyvoice/models/`
 - `integrations/vrm_web/node_modules/`
 
-The private repository contains integration code and install scripts, not model
+The public repository contains integration code and install scripts, not model
 weights, voice samples, API credentials, or conversations.
 
 ## Verification
